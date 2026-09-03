@@ -1,0 +1,28 @@
+# {{ ansible_managed }}
+#
+# Балансировщик HTTP API. Работает в host-сети: он должен слушать svc_ip
+# и ходить к процессам приёма напрямую, а не через bridge с трансляцией адресов.
+
+name: stand-lb
+
+services:
+  haproxy:
+    image: "{{ haproxy_image_ref }}"
+    hostname: postal-lb-{{ inventory_hostname }}
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - "{{ postal_lb_dir }}/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -q -O /dev/null http://{{ svc_ip }}:{{ postal_lb_stats_port }}/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # Драйвер логов и ротация не задаются здесь: роль docker_host выставляет
+    # их в daemon.json глобально, и контейнер наследует их сам.
+    deploy:
+      resources:
+        limits:
+          cpus: "{{ postal_lb_limits.cpus }}"
+          memory: "{{ postal_lb_limits.memory }}"

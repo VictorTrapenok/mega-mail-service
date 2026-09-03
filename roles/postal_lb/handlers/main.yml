@@ -1,0 +1,6 @@
+---
+- name: Перезапустить балансировщик
+  community.docker.docker_compose_v2:
+    project_src: "{{ postal_lb_dir }}"
+    state: restarted
+    wait: true

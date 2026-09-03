@@ -108,7 +108,7 @@ bench_loadgen_argv:
   - "-v"
   - "{{ loadgen_results_dir }}:/results"
   - "-e"
-  - "POSTAL_API_URL=http://{{ postal_web_addrs | first }}:{{ postal_web_port }}"
+  - "POSTAL_API_URL=http://{{ postal_api_addr }}"
   - "-e"
   - "POSTAL_WEB_HOST={{ postal_web_hostname }}"
   - "-e"

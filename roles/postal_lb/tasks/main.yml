@@ -1,0 +1,60 @@
+---
+# Балансировщик HTTP API перед процессами приёма.
+#
+# Нужен потому, что приём масштабируется процессами, а не потоками: у MRI Ruby
+# есть GVL, и один процесс Puma не выполняет счётную работу больше чем
+# на одном ядре. Обращение к первому процессу из нескольких измеряло бы один
+# процесс вместо системы.
+
+- name: Создать каталог балансировщика
+  ansible.builtin.file:
+    path: "{{ postal_lb_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Развернуть конфигурацию HAProxy
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: "{{ postal_lb_dir }}/haproxy.cfg"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезапустить балансировщик
+
+- name: Развернуть compose-файл балансировщика
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ postal_lb_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезапустить балансировщик
+
+- name: Запустить балансировщик
+  community.docker.docker_compose_v2:
+    project_src: "{{ postal_lb_dir }}"
+    state: present
+    wait: true
+
+- name: Применить отложенный перезапуск балансировщика
+  ansible.builtin.meta: flush_handlers
+
+# Балансировщик, поднявшийся с пустым или неполным набором процессов приёма,
+# выглядел бы работающим, а прогон измерял бы меньше процессов, чем записано
+# в отчёте. Поэтому проверяется не факт запуска, а число живых бэкендов.
+- name: Дождаться готовности бэкендов приёма
+  ansible.builtin.uri:
+    url: "http://{{ svc_ip }}:{{ postal_lb_stats_port }}/;csv"
+    return_content: true
+  register: postal_lb_stats
+  until: >-
+    (postal_lb_stats.content | default('')).split('\n')
+    | select('search', '^postal_web,web-')
+    | select('search', ',UP,')
+    | list | length == (groups['postal_web']
+                        | map('extract', hostvars, 'postal_web_replicas')
+                        | map('int') | sum)
+  retries: 30
+  delay: 2

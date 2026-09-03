@@ -26,6 +26,12 @@ mariadb_limits:
   cpus: "4.0"
   memory: "8g"
 
+# Балансировщик событийный и на этих скоростях почти ничего не потребляет,
+# но лимит задан явно: без него он конкурировал бы за ядра с тем, что измеряем.
+postal_lb_limits:
+  cpus: "1.0"
+  memory: "512m"
+
 sink_limits:
   cpus: "2.0"
   # Должно перекрывать postfix_sink_spool_tmpfs_size: страницы tmpfs

@@ -24,6 +24,10 @@ mariadb_image_ref: "mariadb:11.4"
 
 coredns_image_ref: "coredns/coredns:1.11.3"
 
+# Балансировщик HTTP API. Нужен потому, что приём масштабируется процессами:
+# у MRI Ruby есть GVL, и один процесс Puma не берёт больше ядра.
+haproxy_image_ref: "haproxy:3.0-alpine"
+
 # Postfix-sink и генератор собираются локально из Dockerfile в roles/*/files,
 # чтобы не зависеть от чужих образов сомнительного происхождения.
 postfix_sink_image: "postal-bench/postfix-sink:local"

@@ -30,7 +30,7 @@
   tasks:
     - name: Отправить письмо через HTTP API
       ansible.builtin.uri:
-        url: "http://{{ postal_web_addrs | first }}:{{ postal_web_port }}/api/v1/send/message"
+        url: "http://{{ postal_api_addr }}/api/v1/send/message"
         method: POST
         headers:
           X-Server-API-Key: "{{ postal_seed.api_key }}"
@@ -56,7 +56,7 @@
 
     - name: Отправить письмо на реальный публичный домен
       ansible.builtin.uri:
-        url: "http://{{ postal_web_addrs | first }}:{{ postal_web_port }}/api/v1/send/message"
+        url: "http://{{ postal_api_addr }}/api/v1/send/message"
         method: POST
         headers:
           X-Server-API-Key: "{{ postal_seed.api_key }}"

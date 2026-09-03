@@ -20,6 +20,17 @@ postal_admin_addr: "{{ hostvars[groups['postal_admin'] | first].svc_ip }}"
 test_dns_addr: "{{ hostvars[groups['test_dns'] | first].svc_ip }}"
 
 postal_web_addrs: "{{ groups['postal_web'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
+postal_lb_addrs: "{{ groups['postal_load_balancers'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
+
+# Точка входа HTTP API для генератора и проверок. Балансировщик используется,
+# как только он есть в inventory: при нескольких процессах приёма обращение
+# к первому из них измеряло бы один процесс, а не систему.
+# Балансировка SMTP при этом запрещена и здесь не появится — HAProxy терминирует
+# TCP, и приёмник увидел бы его адрес вместо исходящего, который привязал Postal.
+postal_api_addr: >-
+  {{ (postal_lb_addrs | first) ~ ':' ~ postal_lb_port
+     if (postal_lb_addrs | length) > 0
+     else (postal_web_addrs | first) ~ ':' ~ postal_web_port }}
 postal_smtp_addrs: "{{ groups['postal_smtp'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
 postal_worker_addrs: "{{ groups['postal_workers'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
 postfix_sink_addrs: "{{ groups['postfix_sinks'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
