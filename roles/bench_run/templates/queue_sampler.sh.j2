@@ -1,0 +1,33 @@
+#!/bin/bash
+# {{ ansible_managed }}
+#
+# Сэмплер очереди. Пишет CSV раз в {{ bench_sample_interval_s }} с.
+#
+# Скобки в условии расставлены явно. В штатном script/queue_size.rb самого
+# Postal приоритет AND/OR перепутан, из-за чего в «готовые» попадают в том
+# числе залоченные строки, и глубина очереди систематически завышается.
+
+set -u
+OUT="$1"
+INTERVAL={{ bench_sample_interval_s }}
+
+echo "ts,total,ready,in_flight,oldest_ready_age_s" > "$OUT"
+
+while true; do
+  docker exec -i {{ mariadb_container }} mariadb \
+      -u{{ mariadb_postal_user }} -p{{ mariadb_postal_password }} \
+      -D {{ postal_main_db_name }} -N -B -e "
+    SELECT
+      UNIX_TIMESTAMP(),
+      COUNT(*),
+      SUM(CASE WHEN locked_at IS NULL
+                AND (retry_after IS NULL OR retry_after < UTC_TIMESTAMP())
+               THEN 1 ELSE 0 END),
+      SUM(CASE WHEN locked_at IS NOT NULL THEN 1 ELSE 0 END),
+      IFNULL(TIMESTAMPDIFF(SECOND,
+             MIN(CASE WHEN locked_at IS NULL THEN created_at END),
+             UTC_TIMESTAMP()), 0)
+    FROM queued_messages;" 2>/dev/null | tr '\t' ',' >> "$OUT"
+
+  sleep "$INTERVAL"
+done

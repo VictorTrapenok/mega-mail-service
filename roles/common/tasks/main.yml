@@ -1,0 +1,66 @@
+---
+- name: Проверить, что ОС поддерживается
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == "Ubuntu"
+      - ansible_facts.distribution_version is version("24.04", ">=")
+    fail_msg: >-
+      Стенд рассчитан на Ubuntu 24.04 LTS,
+      обнаружено {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}.
+
+- name: Установить базовые пакеты
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# Все отметки времени в отчётах — UTC. Иначе смена часового пояса между
+# прогонами превращается в необъяснимый сдвиг в сверке.
+- name: Установить часовой пояс UTC
+  community.general.timezone:
+    name: Etc/UTC
+
+- name: Настроить chrony
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony/chrony.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезапустить chrony
+
+- name: Включить chrony
+  ansible.builtin.systemd:
+    name: chrony
+    state: started
+    enabled: true
+
+- name: Применить сетевые sysctl
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+  loop: "{{ common_sysctls | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Поднять лимит файловых дескрипторов
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/99-postal-bench.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      * soft nofile 1048576
+      * hard nofile 1048576
+
+- name: Создать каталог артефактов стенда
+  ansible.builtin.file:
+    path: /opt/postal-bench
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"

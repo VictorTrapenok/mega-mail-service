@@ -1,0 +1,20 @@
+#!/bin/bash
+# {{ ansible_managed }}
+#
+# Сэмплер потребления ресурсов контейнерами. Прометея на этом этапе нет
+# сознательно: нужны шесть чисел, а не система мониторинга.
+
+set -u
+OUT="$1"
+INTERVAL={{ bench_sample_interval_s }}
+
+echo "ts,container,cpu_pct,mem_used,mem_limit" > "$OUT"
+
+while true; do
+  TS=$(date +%s)
+  docker stats --no-stream --format '{% raw %}{{.Name}},{{.CPUPerc}},{{.MemUsage}}{% endraw %}' 2>/dev/null \
+    | sed 's/%//; s/ \/ /,/' \
+    | while IFS= read -r line; do echo "${TS},${line}"; done >> "$OUT"
+
+  sleep "$INTERVAL"
+done

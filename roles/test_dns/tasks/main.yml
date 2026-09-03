@@ -1,0 +1,65 @@
+---
+- name: Создать каталог CoreDNS
+  ansible.builtin.file:
+    path: "{{ test_dns_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Развернуть Corefile
+  ansible.builtin.template:
+    src: Corefile.j2
+    dest: "{{ test_dns_dir }}/Corefile"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезапустить CoreDNS
+
+- name: Развернуть зону {{ postal_test_domain }}
+  ansible.builtin.template:
+    src: zone.j2
+    dest: "{{ test_dns_dir }}/{{ postal_test_domain }}.zone"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезапустить CoreDNS
+
+- name: Развернуть compose-файл CoreDNS
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ test_dns_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезапустить CoreDNS
+
+- name: Запустить CoreDNS
+  community.docker.docker_compose_v2:
+    project_src: "{{ test_dns_dir }}"
+    state: present
+    wait: true
+
+- name: Применить отложенный перезапуск CoreDNS
+  ansible.builtin.meta: flush_handlers
+
+- name: Проверить, что MX домена назначения резолвится авторитативно
+  ansible.builtin.command:
+    argv:
+      - dig
+      - "@{{ test_dns_addr }}"
+      - "+short"
+      - MX
+      - "{{ test_dns_destination_prefix }}0001.{{ postal_test_domain }}"
+  register: dns_check_mx
+  changed_when: false
+  failed_when: dns_check_mx.stdout | trim == ""
+
+# Внешние домены не должны резолвиться вообще: это отдельный рубеж изоляции,
+# который срабатывает раньше правил nftables и не зависит от них.
+- name: Проверить, что внешние домены не резолвятся
+  ansible.builtin.command:
+    argv: [dig, "@{{ test_dns_addr }}", "+short", MX, "gmail.com"]
+  register: dns_check_external
+  changed_when: false
+  failed_when: dns_check_external.stdout | trim != ""

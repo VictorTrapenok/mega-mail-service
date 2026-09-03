@@ -1,0 +1,6 @@
+---
+- name: Перезапустить CoreDNS
+  community.docker.docker_compose_v2:
+    project_src: "{{ test_dns_dir }}"
+    state: restarted
+    wait: true

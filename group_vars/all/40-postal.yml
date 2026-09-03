@@ -1,0 +1,96 @@
+---
+# Конфигурация Postal.
+#
+# Postal настраивается ТОЛЬКО переменными окружения: Konfig загружает источник
+# Environment раньше YAML, поэтому env всегда выигрывает у файла. В /config
+# остаётся один signing.key. Имена переменных сверены с
+# doc/config/environment-variables.md тега 3.3.7.
+#
+# ВНИМАНИЕ: переменные PORT и BIND_ADDRESS перекрывают и web-сервер, и SMTP-сервер
+# одновременно. Их нельзя задавать на уровне группы — только формы *_DEFAULT_*
+# в шаблоне compose, отдельно для каждого контейнера.
+
+postal_test_domain: "bench.test"
+postal_smtp_hostname: "postal.bench.test"
+postal_web_hostname: "postal.bench.test"
+
+# --- Порты ----------------------------------------------------------------
+# Ingress Postal подвинут на 2525, потому что MX-запись не несёт номер порта:
+# sink обязан слушать 25, а генератор наш и пойдёт куда скажут. Благодаря этому
+# одна раскладка работает и на одном сервере, и на нескольких.
+postal_smtp_port: 2525
+postal_web_port: 5000
+# Базы разнесены с запасом: при двух и более репликах воркера порт
+# postal_worker_health_port_base + 1 иначе совпал бы с портом health-сервера
+# SMTP, и проверка второй реплики опрашивала бы чужой процесс — зелёную,
+# но чужую.
+postal_worker_health_port_base: 9200
+postal_smtp_health_port_base: 9100
+
+# --- Базы данных ----------------------------------------------------------
+postal_main_db_name: "postal"
+postal_message_db_prefix: "postal"
+
+# Дефолт пула — 5, что мало для сколько-нибудь заметного числа воркеров.
+# Значение осмысленно поднимать только вместе с max_connections MariaDB
+# и с оглядкой на row locks; это отдельный измеряемый эксперимент.
+postal_main_db_pool_size: 25
+
+# --- Воркеры --------------------------------------------------------------
+# Эффективная конкурентность = replicas x threads. Дефолт threads — 2.
+postal_worker_replicas: 1
+postal_worker_threads: 2
+
+# --- Параметры, которые нельзя оставлять по умолчанию ---------------------
+
+# TidyQueuedMessagesTask УНИЧТОЖАЕТ сообщения с устаревшим локом, а не
+# переоткрывает их. Дополнительно bin/postal запускает Ruby без exec, поэтому
+# PID 1 — это bash, обработчики сигналов не срабатывают на docker stop,
+# и после каждого рестарта остаются залоченные строки. Ставим заведомо больше
+# длительности любого прогона.
+postal_queued_message_lock_stale_days: 30
+
+# По умолчанию false: Postal сначала резолвит NS домена, что на .test не работает,
+# и верификация домена молча ломается.
+postal_use_local_ns_for_domain_verification: true
+
+# На single-host у воркера нет отдельных исходящих адресов, а при включённых пулах
+# каждому сообщению назначается ip_address_id, которого нет ни на одном хосте.
+# Такая очередь встаёт полностью и молча: осиротевшие строки не видит даже
+# tidy-задача, потому что у них locked_at IS NULL.
+postal_use_ip_pools: false
+
+# Батчинг по домену получателя. Оставляем включённым (значение по умолчанию),
+# но помним: он даёт до 100 писем в батч, поэтому кардинальность доменов
+# в профиле нагрузки напрямую влияет на результат.
+postal_batch_queued_messages: true
+
+# --- DNS ------------------------------------------------------------------
+# Дефолты Postal указывают на реальные резолвимые *.postal.example.com —
+# в закрытом контуре это недопустимо, всё переезжает в .test.
+postal_dns:
+  mx_records: ["mx.{{ postal_test_domain }}"]
+  spf_include: "spf.{{ postal_test_domain }}"
+  return_path_domain: "rp.{{ postal_test_domain }}"
+  route_domain: "routes.{{ postal_test_domain }}"
+  track_domain: "track.{{ postal_test_domain }}"
+  domain_verify_prefix: "postal-verification"
+  custom_return_path_prefix: "psrp"
+  helo_hostname: "{{ postal_smtp_hostname }}"
+  # Дефолт 5 даёт последовательность таймаутов 5 / 2.5 / 2.5 на резолвер.
+  # Снижаем, чтобы ошибка конфигурации падала быстро, а не подвешивала воркеры.
+  timeout: 2
+  resolv_conf_path: "/etc/resolv.conf"
+
+# smtp_relays полностью отключает MX-резолвинг, поэтому по умолчанию пусто.
+# Использовать только как отладочный обход и только с резолвимым FQDN:
+# IP-литерал в smtp_relays в Postal v3 не работает.
+postal_smtp_relays: []
+
+# TLS на ingress по умолчанию выключен в Postal. Задаём явно, чтобы значение
+# не стало случайным отличием между сборками.
+postal_smtp_tls_enabled: false
+
+# Максимальный размер сообщения (МБ). Должен быть согласован
+# с message_size_limit на стороне Postfix sink.
+postal_smtp_max_message_size: 25

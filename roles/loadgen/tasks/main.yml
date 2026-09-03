@@ -1,0 +1,23 @@
+---
+- name: Создать каталоги генератора
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0777"
+  loop:
+    - "{{ loadgen_dir }}"
+    - "{{ loadgen_results_dir }}"
+
+- name: Разложить сценарий нагрузки
+  ansible.builtin.copy:
+    src: send.js
+    dest: "{{ loadgen_dir }}/send.js"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Загрузить образ генератора
+  community.docker.docker_image_pull:
+    name: "{{ loadgen_image_ref }}"

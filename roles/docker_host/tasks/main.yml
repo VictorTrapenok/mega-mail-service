@@ -1,0 +1,88 @@
+---
+- name: Удалить пакеты Docker из дистрибутива
+  ansible.builtin.apt:
+    name:
+      - docker.io
+      - docker-compose
+      - docker-doc
+      - podman-docker
+      - runc
+    state: absent
+
+- name: Добавить репозиторий Docker
+  ansible.builtin.deb822_repository:
+    name: docker
+    types: [deb]
+    uris: "{{ docker_apt_repo_url }}"
+    suites: ["{{ ansible_facts.distribution_release }}"]
+    components: ["{{ docker_apt_channel }}"]
+    signed_by: "{{ docker_apt_gpg_key }}"
+    state: present
+    enabled: true
+  register: docker_repo
+
+- name: Обновить кэш apt
+  ansible.builtin.apt:
+    update_cache: true
+  when: docker_repo.changed
+
+- name: Установить Docker
+  ansible.builtin.apt:
+    name: "{{ docker_packages }}"
+    state: present
+  when: not docker_pin_versions
+
+- name: Установить Docker зафиксированных версий
+  ansible.builtin.apt:
+    name: "{{ docker_packages | zip(docker_packages | map('extract', docker_pinned_versions)) | map('join', '=') | list }}"
+    state: present
+    allow_downgrade: true
+  when: docker_pin_versions
+
+- name: Заморозить версии пакетов Docker
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: "{{ 'hold' if docker_pin_versions else 'install' }}"
+  loop: "{{ docker_packages }}"
+
+- name: Настроить демон Docker
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {
+        "log-driver": "{{ docker_log_driver }}",
+        "log-opts": {
+          "max-size": "{{ docker_log_max_size }}",
+          "max-file": "{{ docker_log_max_file }}"
+        }
+      }
+  notify: Перезапустить Docker
+
+- name: Включить Docker
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Применить отложенный перезапуск Docker до дальнейших задач
+  ansible.builtin.meta: flush_handlers
+
+- name: Зафиксировать версии Docker и Compose для отчёта
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      printf '%s\t%s\n' \
+        "$(docker version --format '{{ '{{' }}.Server.Version{{ '}}' }}')" \
+        "$(docker compose version --short)"
+    executable: /bin/bash
+  changed_when: false
+  register: docker_versions
+
+- name: Сохранить версии Docker в факты хоста
+  ansible.builtin.set_fact:
+    stand_docker_version: "{{ docker_versions.stdout.split('\t')[0] }}"
+    stand_compose_version: "{{ docker_versions.stdout.split('\t')[1] }}"
+    cacheable: true

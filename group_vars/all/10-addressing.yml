@@ -1,0 +1,39 @@
+---
+# Адресация стенда.
+#
+# svc_ip вычисляется в контексте КАЖДОГО хоста, поэтому hostvars[h].svc_ip
+# корректно раскрывается для чужого хоста. Двухаргументная форма default(x, true)
+# нужна, чтобы пустая строка тоже проваливалась к следующему варианту,
+# а не подставлялась как адрес.
+svc_ip: >-
+  {{ service_ip
+     | default(ansible_host
+     | default(ansible_facts.default_ipv4.address | default('', true), true), true) }}
+
+# --- Производные адреса зависимостей -------------------------------------
+# Все они собираются из inventory, ни один адрес не хардкодится.
+
+postal_main_db_addr: "{{ hostvars[groups['postal_main_db'] | first].svc_ip }}"
+postal_message_db_addr: "{{ hostvars[groups['postal_message_db'] | first].svc_ip }}"
+postal_admin_addr: "{{ hostvars[groups['postal_admin'] | first].svc_ip }}"
+
+test_dns_addr: "{{ hostvars[groups['test_dns'] | first].svc_ip }}"
+
+postal_web_addrs: "{{ groups['postal_web'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
+postal_smtp_addrs: "{{ groups['postal_smtp'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
+postal_worker_addrs: "{{ groups['postal_workers'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
+postfix_sink_addrs: "{{ groups['postfix_sinks'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
+
+# Подсеть стенда: всё, что вне её, недостижимо по SMTP (см. роль containment).
+stand_cidr: >-
+  {{ (postal_web_addrs + postal_smtp_addrs + postal_worker_addrs
+      + postfix_sink_addrs + [postal_main_db_addr, test_dns_addr]) | unique }}
+
+# Хосты, на которых стоит изоляция. Счётчик утечек читается и сбрасывается
+# на всех них: чтение с одного означало бы, что утечка с любого другого
+# просто не видна.
+containment_hosts: >-
+  {{ ((groups['postal_web'] | default([]))
+      + (groups['postal_smtp'] | default([]))
+      + (groups['postal_workers'] | default([]))
+      + (groups['postfix_sinks'] | default([]))) | unique }}

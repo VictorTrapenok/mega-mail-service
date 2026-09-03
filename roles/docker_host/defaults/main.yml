@@ -1,0 +1,37 @@
+---
+# Docker Engine + compose plugin.
+
+docker_apt_repo_url: "https://download.docker.com/linux/ubuntu"
+docker_apt_gpg_key: "https://download.docker.com/linux/ubuntu/gpg"
+docker_apt_channel: "stable"
+
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+
+# Фиксация версий выключена по умолчанию, чтобы первое развёртывание
+# не падало из-за исчезнувшей из репозитория версии.
+#
+# Включить СТОИТ, как только стенд заработает: Compose 5.2.0 заменил алгоритм
+# сверки состояния, 5.5.0 предупреждает о разовом пересоздании контейнеров после
+# обновления, а community.docker разбирает вывод Compose CLI, формат которого
+# документирован как нестабильный. Обновление посреди серии прогонов
+# пересоздаст контейнеры и обнулит счётчики.
+#
+# Фактические установленные версии всё равно попадают в отчёт о прогоне.
+docker_pin_versions: false
+docker_pinned_versions:
+  docker-ce: "5:29.7.2-1~ubuntu.24.04~noble"
+  docker-ce-cli: "5:29.7.2-1~ubuntu.24.04~noble"
+  containerd.io: "2.3.4-1~ubuntu.24.04~noble"
+  docker-buildx-plugin: "0.36.1-1~ubuntu.24.04~noble"
+  docker-compose-plugin: "5.5.0-1~ubuntu.24.04~noble"
+
+# Драйвер json-file пишет синхронно и на нагруженном sink'е становится
+# узким местом раньше, чем Postfix. Ограничиваем и размер, и ротацию.
+docker_log_driver: "local"
+docker_log_max_size: "64m"
+docker_log_max_file: "3"

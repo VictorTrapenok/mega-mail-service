@@ -1,0 +1,44 @@
+---
+# Лимиты ресурсов контейнеров.
+#
+# Проверено по pkg/compose/create.go: в обычном (не swarm) docker compose
+# работают deploy.resources.limits.{cpus,memory,pids} и reservations.memory,
+# а reservations.cpus молча игнорируется. deploy применяется ПОСЛЕ верхнеуровневых
+# cpus/mem_limit и перекрывает их, поэтому задаём только deploy.
+#
+# cpuset_cpus предпочтительнее cpus для сравнительных прогонов: квота CFS душит
+# контейнер на границах 100-мс периодов, показывая при этом среднюю загрузку
+# заметно ниже 100 %, и две сборки под разными эффективными квотами несравнимы.
+# На single-host это единственный способ развести SUT, sink и генератор по ядрам.
+
+postal_limits:
+  web:
+    cpus: "1.0"
+    memory: "1g"
+  smtp:
+    cpus: "2.0"
+    memory: "2g"
+  worker:
+    cpus: "2.0"
+    memory: "2g"
+
+mariadb_limits:
+  cpus: "4.0"
+  memory: "8g"
+
+sink_limits:
+  cpus: "2.0"
+  # Должно перекрывать postfix_sink_spool_tmpfs_size: страницы tmpfs
+  # учитываются в памяти контейнера.
+  memory: "4g"
+
+loadgen_limits:
+  cpus: "2.0"
+  memory: "2g"
+
+# Привязка к ядрам. Пусто = не привязывать (распределённый режим,
+# где компоненты и так на разных машинах).
+postal_cpuset: ""
+mariadb_cpuset: ""
+sink_cpuset: ""
+loadgen_cpuset: ""

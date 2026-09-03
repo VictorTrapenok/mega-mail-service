@@ -1,0 +1,89 @@
+---
+# Приведение стенда к одинаковому стартовому состоянию.
+#
+# Эта роль разрушительна и неидемпотентна ПО ЗАМЫСЛУ: протокол сравнения
+# сборок требует одинакового состояния БД и очереди перед каждым прогоном.
+# Делать её идемпотентной значило бы тихо сломать сравнение.
+
+- name: Очистить очередь
+  community.mysql.mysql_query:
+    login_host: "{{ postal_main_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_main_db_name }}"
+    query: "TRUNCATE TABLE queued_messages"
+  changed_when: true
+
+# Два HardFail на адрес за сутки переводят все последующие письма ему в Held.
+# Без очистки список подавления переносится между прогонами серии,
+# и второй прогон стартует в других условиях, чем первый.
+- name: Очистить список подавления
+  community.mysql.mysql_query:
+    login_host: "{{ postal_message_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_seed.message_db_name }}"
+    query: "TRUNCATE TABLE suppressions"
+  changed_when: true
+  failed_when: false
+
+# Пересоздание базы сообщений через сам Postal: provisioner делает
+# DROP + CREATE + миграции и попутно убирает посуточные таблицы raw-*.
+# Простой TRUNCATE их бы не тронул, и следующий прогон стартовал бы
+# с другим профилем занятости диска.
+- name: Пересоздать базу сообщений
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - "-f"
+      - "{{ postal_dir }}/docker-compose.yml"
+      - "--profile"
+      - tools
+      - run
+      - "--rm"
+      - "-T"
+      - runner
+      - bundle
+      - exec
+      - rails
+      - runner
+      - "Server.find({{ postal_seed.server_id }}).message_db.provisioner.provision"
+  delegate_to: "{{ groups['postal_admin'] | first }}"
+  run_once: true
+  changed_when: true
+
+- name: Убедиться, что таблиц raw-* не осталось
+  community.mysql.mysql_query:
+    login_host: "{{ postal_message_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    query: >-
+      SELECT COUNT(*) AS n FROM information_schema.tables
+      WHERE table_schema = '{{ postal_seed.message_db_name }}'
+        AND table_name LIKE 'raw-%'
+  register: raw_tables
+  changed_when: false
+  failed_when: (raw_tables.query_result[0][0].n | int) > 0
+
+- name: Очистить логи приёмника
+  ansible.builtin.shell:
+    cmd: ": > {{ postfix_sink_log }}"
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  changed_when: true
+
+# Сбрасывается на ВСЕХ хостах с изоляцией, а не только на текущем:
+# счётчик читается отчётом суммарно, и несброшенный остаток на соседнем
+# хосте выглядел бы как утечка в этом прогоне.
+- name: Обнулить счётчики попыток утечки
+  ansible.builtin.command:
+    argv: [nft, reset, counter, inet, mailguard, smtp_escape_attempts]
+  delegate_to: "{{ item }}"
+  loop: "{{ containment_hosts }}"
+  changed_when: true

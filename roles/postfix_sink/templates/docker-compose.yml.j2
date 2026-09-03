@@ -1,0 +1,43 @@
+{{ ansible_managed | comment }}
+name: stand-sink
+
+services:
+  sink:
+    image: {{ postfix_sink_image }}
+    build:
+      context: {{ postfix_sink_dir }}/build
+    restart: unless-stopped
+    hostname: {{ postfix_sink_hostname }}
+    # Host-сеть, а не публикация порта. При публикации Docker делает DNAT,
+    # и это ломает стенд дважды: правило nftables в цепочке forward видит
+    # уже подменённый адрес назначения (адрес контейнера) и отбивает почту,
+    # а сам Postfix видит подменённый адрес источника (шлюз bridge-сети),
+    # которого нет в mynetworks, и отвечает «554 relay access denied».
+    # Конфликта портов нет: ingress Postal стоит на 2525.
+    network_mode: host
+    volumes:
+      - {{ postfix_sink_dir }}/conf/main.cf:/etc/postfix/main.cf:ro
+      - {{ postfix_sink_dir }}/conf/master.cf:/etc/postfix/master.cf:ro
+      - {{ postfix_sink_dir }}/log:/var/log/postfix
+    tmpfs:
+      # Очередь в памяти: при discard-транспорте письмо проходит полный путь
+      # с fsync перед ответом 250, и на обычном диске потолок приёма
+      # определяется задержкой fsync, а не Postfix.
+      - /var/spool/postfix:size={{ postfix_sink_spool_tmpfs_size }},mode=0755
+    healthcheck:
+      test: ["CMD", "postfix", "status"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "{{ sink_limits.cpus }}"
+          # Лимит обязан перекрывать tmpfs очереди: страницы tmpfs учитываются
+          # в памяти контейнера, поэтому очередь, заполнившая tmpfs, иначе
+          # убила бы Postfix по OOM.
+          memory: "{{ sink_limits.memory }}"
+{% if sink_cpuset %}
+    cpuset: "{{ sink_cpuset }}"
+{% endif %}

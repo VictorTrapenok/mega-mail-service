@@ -1,0 +1,34 @@
+{{ ansible_managed | comment }}
+
+{{ postal_test_domain }}:{{ test_dns_port }} {
+    # Конкретный адрес, а не 0.0.0.0: на 127.0.0.53 сидит systemd-resolved.
+    bind {{ test_dns_addr }}
+    file /etc/coredns/{{ postal_test_domain }}.zone
+
+    # Домены назначения d0001..dNNNN не хранятся в зоне: их тысяча,
+    # и все они отвечают одинаково.
+    # По одной MX-записи на каждый sink с ОДИНАКОВЫМ приоритетом:
+    # DNSResolver#mx рандомизирует равноприоритетные записи, и нагрузка
+    # расходится сама. Несколько A-записей на одном имени дали бы не это,
+    # а перебор с отказоустойчивостью — Postal пробует адреса по порядку.
+    template IN MX {{ postal_test_domain }} {
+        match "^{{ test_dns_destination_prefix }}[0-9]+\.{{ postal_test_domain | replace('.', '\\.') }}\.$"
+{% for h in groups['postfix_sinks'] | default([]) %}
+        answer "{{ '{{' }} .Name {{ '}}' }} 60 IN MX {{ test_dns_mx_priority }} sink-{{ loop.index }}.{{ postal_test_domain }}."
+{% endfor %}
+    }
+
+    errors
+    log
+}
+
+. {
+    bind {{ test_dns_addr }}
+    # Forwarder'ов нет сознательно: внешние домены не резолвятся вообще,
+    # а не просто блокируются файрволом. Это отдельный рубеж изоляции —
+    # он срабатывает раньше, чем правило nftables, и не зависит от него.
+    template ANY ANY {
+        rcode NXDOMAIN
+    }
+    errors
+}

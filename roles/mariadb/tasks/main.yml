@@ -1,0 +1,75 @@
+---
+- name: Создать каталоги MariaDB
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ mariadb_dir }}"
+    - "{{ mariadb_dir }}/conf.d"
+
+- name: Развернуть my.cnf
+  ansible.builtin.template:
+    src: my.cnf.j2
+    dest: "{{ mariadb_dir }}/conf.d/99-bench.cnf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезапустить MariaDB
+
+- name: Развернуть compose-файл MariaDB
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ mariadb_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезапустить MariaDB
+
+- name: Запустить MariaDB
+  community.docker.docker_compose_v2:
+    project_src: "{{ mariadb_dir }}"
+    state: present
+    wait: true
+
+- name: Применить отложенный перезапуск MariaDB
+  ansible.builtin.meta: flush_handlers
+
+# Postal подключается к message DB тем же пользователем и создаёт базы
+# на лету (Server after_create -> provisioner.provision), поэтому ему нужны
+# права на весь префикс, а не только на основную базу.
+- name: Выдать права на базы message DB
+  community.mysql.mysql_query:
+    login_host: "{{ svc_ip }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: root
+    login_password: "{{ mariadb_root_password }}"
+    query: >-
+      GRANT ALL PRIVILEGES ON `{{ postal_message_db_prefix }}%`.*
+      TO '{{ mariadb_postal_user }}'@'%'
+  changed_when: true
+
+- name: Вычитать зафиксированные переменные MariaDB обратно
+  community.mysql.mysql_query:
+    login_host: "{{ svc_ip }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: root
+    login_password: "{{ mariadb_root_password }}"
+    query: >-
+      SELECT LOWER(VARIABLE_NAME) AS name, VARIABLE_VALUE AS value
+      FROM information_schema.GLOBAL_VARIABLES
+      WHERE LOWER(VARIABLE_NAME) IN
+        ({{ mariadb_pinned.keys() | map('lower') | map('regex_replace', '^(.*)$', "'\\1'") | join(', ') }})
+  register: mariadb_effective
+  changed_when: false
+
+# Значение, которое MariaDB не приняла, тихо остаётся дефолтным, и весь прогон
+# измеряет не то, что записано в отчёте. Поэтому сверяем, а не надеемся.
+- name: Сохранить фактические значения для отчёта
+  ansible.builtin.set_fact:
+    stand_mariadb_effective: >-
+      {{ dict(mariadb_effective.query_result[0] | map(attribute='name')
+              | zip(mariadb_effective.query_result[0] | map(attribute='value'))) }}
+    cacheable: true

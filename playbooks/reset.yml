@@ -1,0 +1,16 @@
+---
+# Приведение стенда к одинаковому стартовому состоянию.
+# Разрушительно и неидемпотентно по замыслу.
+
+- name: Собрать факты со всех хостов
+  hosts: all
+  gather_facts: true
+  tasks: []
+
+- name: Сбросить состояние
+  hosts: postal_main_db
+  become: true
+  vars:
+    postal_seed: "{{ hostvars[groups['postal_admin'] | first].postal_seed }}"
+  roles:
+    - bench_reset

@@ -1,0 +1,46 @@
+---
+- name: Развернуть скрипт сидирования
+  ansible.builtin.template:
+    src: seed.rb.j2
+    dest: "{{ postal_seed_script }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Выполнить сидирование
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - "-f"
+      - "{{ postal_dir }}/docker-compose.yml"
+      - "--profile"
+      - tools
+      - run
+      - "--rm"
+      - "-T"
+      - runner
+      - bundle
+      - exec
+      - rails
+      - runner
+      - /scripts/seed.rb
+  register: postal_seed_run
+  changed_when: true
+
+- name: Разобрать результат сидирования
+  ansible.builtin.set_fact:
+    postal_seed: >-
+      {{ (postal_seed_run.stdout_lines
+          | select('match', '^POSTAL_SEED_JSON:')
+          | first
+          | regex_replace('^POSTAL_SEED_JSON:', '')) | from_json }}
+    cacheable: true
+
+- name: Показать сведения о засеянном сервере
+  ansible.builtin.debug:
+    msg: >-
+      server_id={{ postal_seed.server_id }}
+      message_db={{ postal_seed.message_db_name }}
+      domain={{ postal_seed.domain_name }}
+      verified={{ postal_seed.domain_verified }}

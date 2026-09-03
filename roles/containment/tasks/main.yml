@@ -1,0 +1,57 @@
+---
+- name: Создать каталог правил nftables
+  ansible.builtin.file:
+    path: /etc/nftables.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Без validate осознанно: идиома атомарной перезаливки (add + delete) не
+# проходит проверку `nft -c`, потому что в режиме проверки таблица реально
+# не создаётся и удалять оказывается нечего. Само правило проверяется тем,
+# что обработчик его применяет, и падает громко, если оно неверно.
+- name: Установить правила изоляции SMTP
+  ansible.builtin.template:
+    src: mailguard.nft.j2
+    dest: /etc/nftables.d/mailguard.nft
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Перезагрузить mailguard
+
+- name: Загружать mailguard при старте
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/mailguard.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Изоляция исходящего SMTP тестового стенда Postal
+      After=network-pre.target
+      Before=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/sbin/nft -f /etc/nftables.d/mailguard.nft
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Перечитать unit-файлы systemd
+
+- name: Применить отложенные обработчики
+  ansible.builtin.meta: flush_handlers
+
+- name: Включить mailguard
+  ansible.builtin.systemd:
+    name: mailguard
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Проверить, что счётчик утечек существует
+  ansible.builtin.command:
+    argv: [/usr/sbin/nft, list, counter, inet, mailguard, smtp_escape_attempts]
+  changed_when: false

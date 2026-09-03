@@ -1,0 +1,50 @@
+{{ ansible_managed | comment }}
+#
+# Приёмник писем стенда: принимает по SMTP штатным образом и выбрасывает.
+
+myhostname = {{ postfix_sink_hostname }}
+mydomain = {{ postal_test_domain }}
+myorigin = $mydomain
+mydestination =
+inet_interfaces = all
+inet_protocols = ipv4
+
+# --- Изоляция -------------------------------------------------------------
+# Ни одного адреса ретрансляции. Вместе с master.cf, где нет служб доставки
+# наружу, это делает отправку в интернет невозможной на уровне конфигурации,
+# а не только правилами файрвола.
+relayhost =
+notify_classes =
+smtpd_relay_restrictions = permit_mynetworks, reject
+smtpd_recipient_restrictions = permit_mynetworks, reject
+mynetworks = 127.0.0.0/8{% for addr in stand_cidr %}, {{ addr }}/32{% endfor %}
+
+
+# Всё уходит в discard. Метка попадает в лог как «status=sent ({{ postfix_sink_discard_token }})»
+# и служит независимым от Postal счётчиком доставки.
+default_transport = discard:{{ postfix_sink_discard_token }}
+transport_maps = static:discard:{{ postfix_sink_discard_token }}
+local_recipient_maps =
+
+# --- Логирование ----------------------------------------------------------
+# Пишем в файл через postlogd, минуя journald: тот по умолчанию режет около
+# 333 строк в секунду на сервис, а sink на 300 msg/s пишет около 2100.
+# Потерянные строки выглядят в сверке как потерянные письма.
+maillog_file = /var/log/postfix/postfix.log
+
+# --- Производительность ---------------------------------------------------
+{% for key, value in postfix_sink_tuning | dictsort %}
+{{ key }} = {{ value }}
+{% endfor %}
+
+message_size_limit = {{ postfix_sink_message_size_limit }}
+
+# Проверки HELO и задержка отказов только добавляют работу: клиент здесь один
+# и доверенный.
+smtpd_helo_required = no
+smtpd_delay_reject = no
+biff = no
+append_dot_mydomain = no
+
+queue_directory = /var/spool/postfix
+compatibility_level = 3.6

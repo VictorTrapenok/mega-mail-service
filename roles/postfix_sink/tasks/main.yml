@@ -1,0 +1,91 @@
+---
+- name: Определить имя хоста приёмника
+  ansible.builtin.set_fact:
+    postfix_sink_hostname: "sink-{{ (groups['postfix_sinks'].index(inventory_hostname) | int) + 1 }}.{{ postal_test_domain }}"
+
+- name: Создать каталоги приёмника
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ postfix_sink_dir }}"
+    - "{{ postfix_sink_dir }}/build"
+    - "{{ postfix_sink_dir }}/conf"
+    - "{{ postfix_sink_dir }}/log"
+
+- name: Разложить контекст сборки образа
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ postfix_sink_dir }}/build/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - Dockerfile
+    - entrypoint.sh
+  notify: Пересобрать приёмник
+
+- name: Развернуть main.cf
+  ansible.builtin.template:
+    src: main.cf.j2
+    dest: "{{ postfix_sink_dir }}/conf/main.cf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезапустить приёмник
+
+- name: Развернуть master.cf
+  ansible.builtin.template:
+    src: master.cf.j2
+    dest: "{{ postfix_sink_dir }}/conf/master.cf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезапустить приёмник
+
+- name: Развернуть compose-файл приёмника
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ postfix_sink_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезапустить приёмник
+
+- name: Собрать и запустить приёмник
+  community.docker.docker_compose_v2:
+    project_src: "{{ postfix_sink_dir }}"
+    build: policy
+    state: present
+    wait: true
+
+- name: Применить отложенные обработчики приёмника
+  ansible.builtin.meta: flush_handlers
+
+# Наличие в системе процесса, способного открыть исходящее SMTP-соединение,
+# сводит на нет весь рубеж изоляции на стороне приёмника.
+- name: Убедиться, что служб доставки наружу нет
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - "-f"
+      - "{{ postfix_sink_dir }}/docker-compose.yml"
+      - exec
+      - "-T"
+      - sink
+      - postconf
+      - "-M"
+  register: sink_master
+  changed_when: false
+  # postconf -M печатает поля через пробелы: «smtp  unix  n ...».
+  # Проверка по «имя/тип» не сработала бы никогда и молча пропускала бы
+  # службу доставки наружу — то есть охрана, которая не может сработать.
+  failed_when: >-
+    sink_master.stdout_lines
+    | map('regex_replace', '^(\\S+)\\s.*$', '\\1')
+    | select('in', ['smtp', 'relay', 'lmtp', 'local', 'virtual'])
+    | list | length > 0

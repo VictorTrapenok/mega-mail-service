@@ -1,0 +1,163 @@
+{% set m = loadgen_summary.metrics %}
+{# В Jinja `.values` разрешается в метод словаря dict.values, а не в ключ
+   "values", поэтому к метрикам k6 обращаемся только индексной записью. #}
+{% set lat = m['postal_accept_latency']['values'] if 'postal_accept_latency' in m else {} %}
+{% set accepted = bench_accepted | int %}
+{% set delivered = bench_delivered | int %}
+{% set queued = bench_queued_now | int %}
+{% set window = (bench_window_end | int) - (bench_window_start | int) %}
+{% set unaccounted = bench_unaccounted | int %}
+# Прогон {{ bench_run_id }}
+
+Postal {{ postal_image_ref }}, профиль `{{ bench_profile }}`, класс прогона **{{ bench_run_class }}**.
+
+{% if bench_run_class == 'debug' %}
+> Класс `debug`: генератор, система под тестом и приёмник делят железо.
+> Числа годятся для отладки контура, но не для сравнения сборок.
+{% endif %}
+
+## Параметры запуска
+
+| | |
+|---|---|
+| Образ Postal (запрошен) | `{{ postal_image_resolved }}` |
+| Образ Postal (фактически запущен) | `{{ running_image.stdout | trim }}` |
+| Ссылка на образ | `{{ postal_image_ref }}` |
+| Образ MariaDB | `{{ mariadb_image_ref }}` |
+| Реплик воркера | {{ postal_worker_replicas }} |
+| Потоков на воркер | {{ postal_worker_threads }} (эффективная конкурентность {{ (postal_worker_replicas | int) * (postal_worker_threads | int) }}) |
+| Пул подключений main DB | {{ postal_main_db_pool_size }} |
+| IP pools | {{ 'включены' if postal_use_ip_pools else 'выключены' }} |
+| Батчинг очереди | {{ 'включён' if postal_batch_queued_messages else 'выключен' }} |
+| Лимиты воркера | {{ postal_limits.worker.cpus }} CPU / {{ postal_limits.worker.memory }} |
+| Лимиты SMTP | {{ postal_limits.smtp.cpus }} CPU / {{ postal_limits.smtp.memory }} |
+| Лимиты MariaDB | {{ mariadb_limits.cpus }} CPU / {{ mariadb_limits.memory }} |
+| Верификация домена | {{ 'принудительная (достоверность снижена)' if postal_force_domain_verification else 'через DNS стенда' }} |
+
+### Фактические переменные MariaDB
+
+Значения вычитаны из `information_schema.GLOBAL_VARIABLES` после старта:
+не принятая сервером настройка молча остаётся дефолтной, и тогда прогон
+измеряет не то, что записано в конфигурации.
+
+| Переменная | Значение |
+|---|---|
+{% for k, v in (hostvars[groups['postal_main_db'] | first].stand_mariadb_effective | default({})) | dictsort %}
+| `{{ k }}` | {{ v }} |
+{% endfor %}
+
+### Профиль нагрузки
+
+| | |
+|---|---|
+| Целевая скорость | {{ bench_target_rate }} получателей/с |
+| Получателей на письмо | {{ bench_profiles[bench_profile].recipients_per_message }} |
+| Размер MIME | {{ (bench_profiles[bench_profile].mime_size_bytes / 1024) | round | int }} КБ |
+| Доменов назначения | {{ bench_profiles[bench_profile].destination_domains }} ({{ bench_profiles[bench_profile].destination_skew }}) |
+| Прогрев / нагрузка | {{ bench_warmup_s }} с / {{ bench_duration_s }} с |
+
+Прогрев выполняется отдельным запуском генератора и в результат не входит:
+приведённые ниже числа относятся только к рабочей фазе.
+
+### Роли хостов
+
+| Хост | Группы |
+|---|---|
+{% for h in groups['all'] %}
+| {{ h }} | {{ hostvars[h].group_names | reject('equalto', 'all') | join(', ') }} |
+{% endfor %}
+
+## Результаты
+
+| Метрика | Значение |
+|---|---|
+| Принято (accepted) | **{{ accepted }}** получателей |
+| Отвергнуто при приёме | {{ bench_rejected }} |
+| Средняя скорость приёма | **{{ (accepted / window) | round(1) if window > 0 else 'н/д' }}** получателей/с |
+| Доставлено в приёмник за окно | **{{ delivered }}** |
+| Доставлено к концу нагрузки | {{ bench_delivered_at_window_end }} |
+| Латентность приёма p50 | {{ (lat['p(50)'] | default(0)) | round(1) }} мс |
+| Латентность приёма p95 | {{ (lat['p(95)'] | default(0)) | round(1) }} мс |
+| Латентность приёма p99 | {{ (lat['p(99)'] | default(0)) | round(1) }} мс |
+| Дренаж завершён | {{ 'да' if bench_drained else 'НЕТ' }} |
+| Время дренажа | {{ (bench_drain_end | int) - (bench_window_end | int) }} с |
+| Осталось в очереди | {{ queued }} (из них в работе {{ bench_in_flight }}) |
+
+{% if not bench_drained %}
+> **Очередь не опустела за {{ bench_drain_timeout_s }} с**, осталось
+> {{ bench_queue_left_after_drain }} сообщений. Это результат, а не сбой:
+> доставка не поспевает за приёмом на данной скорости. Устойчивой такую
+> скорость считать нельзя.
+{% endif %}
+{% if (bench_dropped | int) > 0 %}
+> **Прогон непригоден для выводов о латентности.** Генератор не удержал
+> расписание: `dropped_iterations = {{ bench_dropped }}`. Открытая модель
+> нарушена, и перцентили занижены на неизвестную величину. Нужно либо снизить
+> целевую скорость, либо дать генератору больше ресурсов.
+{% endif %}
+
+## Сверка
+
+```
+accepted = (терминальные состояния) + queued
+{{ accepted }} = {{ bench_terminal }} + {{ queued }}
+```
+
+| Корзина | Получателей |
+|---|---|
+{% for status, n in bench_buckets | dictsort %}
+| {{ status }} | {{ n }} |
+{% endfor %}
+| В очереди | {{ queued }} |
+| В работе | {{ bench_in_flight }} |
+| **Не учтено** | **{{ unaccounted }}** ({{ ((unaccounted / accepted * 100) | abs) | round(2) if accepted > 0 else 'н/д' }} %) |
+
+Независимая проверка доставки: приёмник записал {{ delivered }} строк
+`status=sent` за окно, Postal считает отправленными
+{{ bench_buckets.Sent | default(0) }}. Расхождение
+{{ delivered - (bench_buckets.Sent | default(0) | int) }}.
+
+{% if (bench_buckets.Held | default(0) | int) > 0 %}
+> `Held` больше нуля при нулевой инжекции отказов означает неисправность
+> стенда, а не медленный Postal: сработал либо список подавления (два HardFail
+> на адрес за сутки), либо send_limit, либо режим сервера.
+{% endif %}
+{% if (silent_removals.stdout | trim | int) > 0 %}
+> **Обнаружено молчаливое удаление сообщений**: {{ silent_removals.stdout | trim }} записей
+> `removing queued message` в логе воркера. Сообщения с устаревшим локом
+> уничтожаются, а не переоткрываются, поэтому сверка не сойдётся.
+{% endif %}
+
+## Изоляция
+
+{% if bench_escape_readable %}
+Счётчик попыток исходящего SMTP мимо стенда, суммарно по
+{{ containment_hosts | length }} хостам: **{{ bench_escape_packets }}**.
+Ненулевое значение означает, что письмо пыталось уйти во внешний интернет.
+{% else %}
+> **Счётчик утечек не прочитан хотя бы на одном хосте.** Это не то же самое,
+> что ноль: изоляция на этом прогоне не подтверждена.
+{% endif %}
+
+## Что этот прогон не доказывает
+
+- Приёмник принимает и выбрасывает почти мгновенно. Реальные MX держат
+  соединение сотнями миллисекунд, ограничивают конкурентность на IP и отдают
+  временные отказы. Это верхняя граница, а не прогноз.
+- Ретраи, отложенная доставка и подавление не нагружались: профиль содержит
+  100 % успешных ответов.
+- Очередь стартовала пустой. Запрос захвата очереди в Postal не покрыт ни одним
+  индексом (в `queued_messages` их три: `domain`, `message_id`, `server_id`),
+  поэтому его стоимость растёт с длиной очереди и на пустой очереди не видна.
+- Распределение по доменам квадратичное, а не Zipf: доля самого горячего
+  домена ниже, чем была бы при настоящем Zipf, а значит батчинг Postal
+  задействован слабее.
+- Сэмплер очереди раз в {{ bench_sample_interval_s }} с выполняет `COUNT(*)`
+  по `queued_messages` на той же MariaDB, что и система под тестом, — это
+  собственная нагрузка измерителя.
+- Прогон длился {{ window }} с. Перенос на сутки — экстраполяция: стоимость
+  обработки письма растёт с накопленным объёмом.
+{% if bench_run_class == 'debug' %}
+- Компоненты делили железо, поэтому сравнивать эти числа со сборкой,
+  измеренной иначе, нельзя.
+{% endif %}

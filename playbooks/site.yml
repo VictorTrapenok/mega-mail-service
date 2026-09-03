@@ -1,0 +1,63 @@
+---
+# Полное развёртывание стенда с нуля.
+
+# Факты собираются со ВСЕХ хостов до любых компонентных плеев: адреса
+# зависимостей берутся из hostvars чужих хостов, а факты хоста, ни разу
+# не попавшего в плей, пусты.
+- name: Собрать факты со всех хостов
+  hosts: all
+  gather_facts: true
+  tasks: []
+
+- name: Подготовить хосты
+  hosts: all
+  become: true
+  roles:
+    - common
+    - docker_host
+
+- name: Настроить изоляцию сети
+  hosts: postal_web:postal_smtp:postal_workers:postfix_sinks
+  become: true
+  roles:
+    - containment
+
+- name: Развернуть внутренний DNS
+  hosts: test_dns
+  become: true
+  roles:
+    - test_dns
+
+- name: Развернуть MariaDB
+  hosts: postal_main_db:postal_message_db
+  become: true
+  roles:
+    - mariadb
+
+- name: Развернуть Postal
+  hosts: postal_web:postal_smtp:postal_workers:postal_admin
+  become: true
+  roles:
+    - postal_image
+    - postal_app
+
+- name: Инициализировать схему Postal
+  hosts: postal_admin
+  become: true
+  roles:
+    - postal_schema
+
+- name: Развернуть приёмник
+  hosts: postfix_sinks
+  become: true
+  roles:
+    - postfix_sink
+
+- name: Развернуть генератор
+  hosts: load_generators
+  become: true
+  roles:
+    - loadgen
+
+- name: Засеять данные Postal
+  ansible.builtin.import_playbook: seed.yml

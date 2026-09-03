@@ -1,0 +1,40 @@
+#!/usr/sbin/nft -f
+{{ ansible_managed | comment }}
+
+# Идиома атомарной перезаливки: add создаёт таблицу, если её нет,
+# delete гарантированно её убирает, и дальше она собирается заново.
+add table inet mailguard
+delete table inet mailguard
+
+table inet mailguard {
+    # Именованный счётчик: smoke-тест утверждает, что он остался нулевым.
+    # Без него «письмо не ушло наружу» — это надежда, а не проверка.
+    counter smtp_escape_attempts {}
+
+    set stand_hosts {
+        type ipv4_addr
+        elements = {
+{% for addr in containment_allowed_addrs %}
+            {{ addr }}{{ "," if not loop.last else "" }}
+{% endfor %}
+        }
+    }
+
+    # Трафик контейнеров с network_mode: host — это трафик самого хоста
+    # и проходит через output. Контейнеры на bridge-сети идут через forward.
+    # Нужны обе цепочки: фильтрация только в одной из них — классическая
+    # ошибка, оставляющая дыру ровно в той топологии, которую не проверяли.
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+        oif "lo" accept
+        ip daddr @stand_hosts accept
+        tcp dport { {{ containment_ports | join(', ') }} } counter name smtp_escape_attempts {{ containment_verdict }}
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+        ip daddr @stand_hosts accept
+        tcp dport { {{ containment_ports | join(', ') }} } counter name smtp_escape_attempts {{ containment_verdict }}
+    }
+}

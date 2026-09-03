@@ -1,0 +1,182 @@
+{{ ansible_managed | comment }}
+#
+# Топология повторяет postalserver/install: три долгоживущих процесса из ОДНОГО
+# образа, различающиеся только аргументом команды, плюс runner для разовых
+# операций. RabbitMQ и процессы cron/requeuer удалены в Postal 3.0 —
+# очередь живёт в MariaDB.
+#
+# network_mode: host — не оптимизация, а требование: воркер определяет свои
+# исходящие адреса перечислением интерфейсов собственного netns
+# (Socket.ip_address_list) и берёт из очереди только строки, у которых
+# ip_address_id совпал или равен NULL. В bridge-сети он увидит 172.x,
+# не совпадёт ни с одной строкой ip_addresses, и при включённых пулах
+# не обработает ничего — молча, без ошибок и без единой строки в логе.
+
+name: stand-postal
+
+x-postal-common: &postal-common
+  image: {{ postal_image_resolved }}
+  restart: unless-stopped
+  network_mode: host
+  volumes:
+    - {{ postal_config_dir }}:/config
+    - {{ test_dns_resolv_conf }}:/etc/postal-resolv.conf:ro
+  environment: &postal-env
+    MAIN_DB_HOST: "{{ postal_main_db_addr }}"
+    MAIN_DB_PORT: "{{ mariadb_port }}"
+    MAIN_DB_USERNAME: "{{ mariadb_postal_user }}"
+    MAIN_DB_PASSWORD: "{{ mariadb_postal_password }}"
+    MAIN_DB_DATABASE: "{{ postal_main_db_name }}"
+    MAIN_DB_POOL_SIZE: "{{ postal_main_db_pool_size }}"
+
+    MESSAGE_DB_HOST: "{{ postal_message_db_addr }}"
+    MESSAGE_DB_PORT: "{{ mariadb_port }}"
+    MESSAGE_DB_USERNAME: "{{ mariadb_postal_user }}"
+    MESSAGE_DB_PASSWORD: "{{ mariadb_postal_password }}"
+    MESSAGE_DB_DATABASE_NAME_PREFIX: "{{ postal_message_db_prefix }}"
+
+    POSTAL_WEB_HOSTNAME: "{{ postal_web_hostname }}"
+    POSTAL_SMTP_HOSTNAME: "{{ postal_smtp_hostname }}"
+    POSTAL_USE_IP_POOLS: "{{ postal_use_ip_pools | lower }}"
+    POSTAL_BATCH_QUEUED_MESSAGES: "{{ postal_batch_queued_messages | lower }}"
+    # TidyQueuedMessagesTask УНИЧТОЖАЕТ сообщения с устаревшим локом,
+    # а не переоткрывает их. Ставим заведомо больше длительности прогона.
+    POSTAL_QUEUED_MESSAGE_LOCK_STALE_DAYS: "{{ postal_queued_message_lock_stale_days }}"
+    # По умолчанию false, и тогда Postal сначала резолвит NS домена,
+    # что на .test не работает и молча ломает верификацию.
+    POSTAL_USE_LOCAL_NS_FOR_DOMAIN_VERIFICATION: "{{ postal_use_local_ns_for_domain_verification | lower }}"
+{% if postal_smtp_relays %}
+    POSTAL_SMTP_RELAYS: "{{ postal_smtp_relays | join(',') }}"
+{% endif %}
+
+    # Резолвер стенда. Хостовой /etc/resolv.conf не трогаем: при host-сети
+    # Postal унаследовал бы systemd-resolved на 127.0.0.53.
+    DNS_RESOLV_CONF_PATH: "/etc/postal-resolv.conf"
+    DNS_TIMEOUT: "{{ postal_dns.timeout }}"
+    DNS_HELO_HOSTNAME: "{{ postal_dns.helo_hostname }}"
+    DNS_MX_RECORDS: "{{ postal_dns.mx_records | join(',') }}"
+    DNS_SPF_INCLUDE: "{{ postal_dns.spf_include }}"
+    DNS_RETURN_PATH_DOMAIN: "{{ postal_dns.return_path_domain }}"
+    DNS_ROUTE_DOMAIN: "{{ postal_dns.route_domain }}"
+    DNS_TRACK_DOMAIN: "{{ postal_dns.track_domain }}"
+    DNS_DOMAIN_VERIFY_PREFIX: "{{ postal_dns.domain_verify_prefix }}"
+    DNS_CUSTOM_RETURN_PATH_PREFIX: "{{ postal_dns.custom_return_path_prefix }}"
+
+    LOGGING_ENABLED: "true"
+    LOGGING_HIGHLIGHTING_ENABLED: "false"
+
+services:
+{% if inventory_hostname in (groups['postal_web'] | default([])) %}
+  web:
+    <<: *postal-common
+    hostname: postal-web-{{ inventory_hostname }}
+    command: ["postal", "web-server"]
+    environment:
+      <<: *postal-env
+      # Дефолт — 127.0.0.1, и при host-сети web оказался бы доступен
+      # только локально.
+      WEB_SERVER_DEFAULT_BIND_ADDRESS: "0.0.0.0"
+      WEB_SERVER_DEFAULT_PORT: "{{ postal_web_port }}"
+      WEB_SERVER_MAX_THREADS: "{{ postal_web_max_threads }}"
+    healthcheck:
+      # Проверяем реальную страницу, а не TCP-соединение: образ с тегом ci-*
+      # собран без precompile ассетов и отдаёт 500, оставаясь при этом
+      # «живым» для проверки на подключение.
+      #
+      # Заголовок Host обязателен. config/application.rb делает
+      # `config.hosts << Postal::Config.postal.web_hostname`, и непустой
+      # config.hosts включает host authorization Rails: любой запрос
+      # с чужим Host (в том числе по IP-адресу) получает 403.
+      #
+      # curl и wget в образе отсутствуют, поэтому проверяем средствами Ruby.
+      test: ["CMD", "ruby", "-e", "require 'net/http'; u = URI('http://127.0.0.1:{{ postal_web_port }}/login'); r = Net::HTTP.start(u.host, u.port) { |h| h.get(u.path, 'Host' => '{{ postal_web_hostname }}') }; exit(r.code == '200' ? 0 : 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "{{ postal_limits.web.cpus }}"
+          memory: "{{ postal_limits.web.memory }}"
+{% if postal_cpuset %}
+    cpuset: "{{ postal_cpuset }}"
+{% endif %}
+{% endif %}
+
+{% if inventory_hostname in (groups['postal_smtp'] | default([])) %}
+  smtp:
+    <<: *postal-common
+    hostname: postal-smtp-{{ inventory_hostname }}
+    command: ["postal", "smtp-server"]
+    environment:
+      <<: *postal-env
+      # Ingress подвинут с 25: MX-запись не несёт порт, поэтому 25 обязан
+      # занимать sink, а генератор наш и пойдёт куда скажут.
+      SMTP_SERVER_DEFAULT_PORT: "{{ postal_smtp_port }}"
+      SMTP_SERVER_DEFAULT_BIND_ADDRESS: "0.0.0.0"
+      SMTP_SERVER_DEFAULT_HEALTH_SERVER_PORT: "{{ postal_smtp_health_port_base }}"
+      SMTP_SERVER_DEFAULT_HEALTH_SERVER_BIND_ADDRESS: "0.0.0.0"
+      SMTP_SERVER_TLS_ENABLED: "{{ postal_smtp_tls_enabled | lower }}"
+      SMTP_SERVER_MAX_MESSAGE_SIZE: "{{ postal_smtp_max_message_size }}"
+    healthcheck:
+      test: ["CMD", "ruby", "-e", "require 'net/http'; exit(Net::HTTP.get_response(URI('http://127.0.0.1:{{ postal_smtp_health_port_base }}/health')).code == '200' ? 0 : 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "{{ postal_limits.smtp.cpus }}"
+          memory: "{{ postal_limits.smtp.memory }}"
+{% if postal_cpuset %}
+    cpuset: "{{ postal_cpuset }}"
+{% endif %}
+{% endif %}
+
+{% if inventory_hostname in (groups['postal_workers'] | default([])) %}
+{% for i in range(postal_worker_replicas | int) %}
+  worker{{ i + 1 }}:
+    <<: *postal-common
+    # Уникальное имя хоста обязательно: batchable_messages захватывает строки
+    # по НЕсуффиксированному имени локера, поэтому контейнеры с одинаковым
+    # hostname разбирают чужие батчи и порождают дубликаты доставки.
+    hostname: postal-worker{{ i + 1 }}-{{ inventory_hostname }}
+    command: ["postal", "worker"]
+    environment:
+      <<: *postal-env
+      WORKER_THREADS: "{{ postal_worker_threads }}"
+      # Порт на реплику: health-сервер при занятом порте перехватывает
+      # EADDRINUSE и просто пишет в лог, поэтому вторая и последующие реплики
+      # молча остались бы без метрик.
+      WORKER_DEFAULT_HEALTH_SERVER_PORT: "{{ postal_worker_health_port_base + i }}"
+      WORKER_DEFAULT_HEALTH_SERVER_BIND_ADDRESS: "0.0.0.0"
+    healthcheck:
+      test: ["CMD", "ruby", "-e", "require 'net/http'; exit(Net::HTTP.get_response(URI('http://127.0.0.1:{{ postal_worker_health_port_base + i }}/health')).code == '200' ? 0 : 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "{{ postal_limits.worker.cpus }}"
+          memory: "{{ postal_limits.worker.memory }}"
+{% if postal_cpuset %}
+    cpuset: "{{ postal_cpuset }}"
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if inventory_hostname in (groups['postal_admin'] | default([])) %}
+  runner:
+    <<: *postal-common
+    restart: "no"
+    profiles: ["tools"]
+    command: ["postal"]
+    volumes:
+      - {{ postal_config_dir }}:/config
+      - {{ test_dns_resolv_conf }}:/etc/postal-resolv.conf:ro
+      - {{ postal_dir }}/scripts:/scripts:ro
+{% endif %}

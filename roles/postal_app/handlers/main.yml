@@ -1,0 +1,7 @@
+---
+- name: Перезапустить Postal
+  community.docker.docker_compose_v2:
+    project_src: "{{ postal_dir }}"
+    state: restarted
+    wait: true
+    wait_timeout: 180

@@ -1,0 +1,57 @@
+---
+# Один измеряемый прогон.
+#
+# Плейбук НЕидемпотентен по замыслу и не входит в критерий повторяемости.
+
+- name: Собрать факты со всех хостов
+  hosts: all
+  gather_facts: true
+  tasks: []
+
+# Идентификатор прогона вычисляется ОДИН раз и раздаётся всем хостам фактом.
+# Как переменная плея он был бы недоступен следующему плею через hostvars,
+# а вычисленный из ansible_date_time — совпадал бы у двух подряд идущих
+# прогонов, потому что этот факт снимается один раз и кэшируется.
+- name: Присвоить идентификатор прогона
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Взять время живыми часами
+      ansible.builtin.command:
+        argv: [date, -u, "+%Y%m%dT%H%M%SZ"]
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+      register: run_clock
+
+    - name: Зафиксировать идентификатор прогона
+      ansible.builtin.set_fact:
+        bench_run_id: "{{ lookup('env', 'BENCH_RUN_ID') | default(run_clock.stdout | trim, true) }}"
+
+- name: Подготовить состояние перед прогоном
+  ansible.builtin.import_playbook: reset.yml
+
+- name: Выполнить прогон
+  hosts: postal_main_db:postal_workers:postal_smtp:postfix_sinks:load_generators
+  become: true
+  vars:
+    postal_seed: "{{ hostvars[groups['postal_admin'] | first].postal_seed }}"
+  roles:
+    - bench_run
+
+- name: Собрать отчёт
+  hosts: postal_main_db
+  become: true
+  vars:
+    db_host: "{{ groups['postal_main_db'] | first }}"
+    postal_seed: "{{ hostvars[groups['postal_admin'] | first].postal_seed }}"
+    postal_image_resolved: "{{ hostvars[groups['postal_workers'] | first].postal_image_resolved }}"
+    bench_window_start: "{{ hostvars[db_host].bench_window_start }}"
+    bench_window_end: "{{ hostvars[db_host].bench_window_end }}"
+    bench_drain_end: "{{ hostvars[db_host].bench_drain_end }}"
+    bench_drained: "{{ hostvars[db_host].bench_drained }}"
+    bench_queue_left_after_drain: "{{ hostvars[db_host].bench_queue_left_after_drain }}"
+    bench_delivered: "{{ hostvars[db_host].bench_delivered }}"
+    bench_delivered_at_window_end: "{{ hostvars[db_host].bench_delivered_at_window_end }}"
+  roles:
+    - bench_report

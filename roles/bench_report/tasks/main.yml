@@ -1,0 +1,169 @@
+---
+# Сборка отчёта о прогоне. Работает после bench_run и читает то, что тот оставил.
+#
+# Доставка НЕ пересчитывается здесь заново: bench_run снял счётчики приёмника
+# на границах окна, и разность уже лежит в bench_delivered. Повторный подсчёт
+# по всему логу включал бы прогрев и остатки прошлых прогонов.
+
+- name: Выполнить сверку по корзинам состояний
+  community.mysql.mysql_query:
+    login_host: "{{ postal_message_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_seed.message_db_name }}"
+    # messages.timestamp — это decimal(18,6) с эпохой Unix, а не DATETIME,
+    # поэтому границы окна сравниваются с числами, а не с NOW().
+    query: >-
+      SELECT status, COUNT(*) AS n FROM messages
+      WHERE scope = 'outgoing'
+        AND timestamp >= {{ bench_window_start }}
+        AND timestamp <  {{ bench_window_end }}
+      GROUP BY status
+  register: reconcile_raw
+  changed_when: false
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+
+- name: Собрать корзины в словарь
+  ansible.builtin.set_fact:
+    bench_buckets: >-
+      {{ dict(reconcile_raw.query_result[0] | map(attribute='status')
+              | zip(reconcile_raw.query_result[0] | map(attribute='n'))) }}
+
+- name: Посчитать остаток в очереди
+  community.mysql.mysql_query:
+    login_host: "{{ postal_main_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_main_db_name }}"
+    query: >-
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN locked_at IS NOT NULL THEN 1 ELSE 0 END) AS in_flight
+      FROM queued_messages
+  register: queue_left
+  changed_when: false
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+
+# Воркер УНИЧТОЖАЕТ сообщения с устаревшим локом, а не переоткрывает их.
+# Если это случилось, сверка не сойдётся, и причина должна быть названа,
+# а не списана на погрешность.
+- name: Проверить, что сообщения не удалялись молча
+  ansible.builtin.shell:
+    cmd: >-
+      docker compose -f {{ postal_dir }}/docker-compose.yml logs --no-color --since {{ bench_run_seconds }}s
+      2>/dev/null | grep -c 'removing queued message' || true
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ groups['postal_workers'] | first }}"
+  register: silent_removals
+  changed_when: false
+
+# Счётчик читается со ВСЕХ хостов, где стоит изоляция, и суммируется.
+# Чтение с одного хоста означало бы, что утечка с любого другого не видна.
+- name: Прочитать счётчики попыток утечки
+  ansible.builtin.shell:
+    cmd: >-
+      nft -j list counter inet mailguard smtp_escape_attempts
+      | python3 -c "import sys,json; print(json.load(sys.stdin)['nftables'][1]['counter']['packets'])"
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ containment_hosts }}"
+  register: escape_counters
+  changed_when: false
+  # Не роняем сбор отчёта: нечитаемость счётчика — это факт, который должен
+  # попасть в отчёт как «изоляция не подтверждена», а не потерять весь прогон.
+  failed_when: false
+
+- name: Свести счётчики утечек
+  ansible.builtin.set_fact:
+    # Нечитаемый счётчик — это НЕ ноль. Пустое значение в отчёте выглядело бы
+    # как «ничего не ушло», поэтому нечитаемость отмечается явно.
+    bench_escape_readable: "{{ escape_counters.results | rejectattr('rc', 'equalto', 0) | list | length == 0 }}"
+    bench_escape_packets: >-
+      {{ escape_counters.results | selectattr('rc', 'equalto', 0)
+         | map(attribute='stdout') | map('trim') | map('int') | sum }}
+
+- name: Прочитать digest фактически запущенного образа Postal
+  ansible.builtin.shell:
+    cmd: >-
+      docker inspect --format '{% raw %}{{index .Config.Image}}{% endraw %}'
+      $(docker compose -f {{ postal_dir }}/docker-compose.yml ps -q worker1) 2>/dev/null || echo unknown
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ groups['postal_workers'] | first }}"
+  register: running_image
+  changed_when: false
+
+- name: Забрать сводку рабочей фазы генератора
+  ansible.builtin.slurp:
+    src: "{{ loadgen_results_dir }}/{{ bench_run_id }}-steady-summary.json"
+  delegate_to: "{{ groups['load_generators'] | first }}"
+  register: loadgen_summary_raw
+
+- name: Разобрать сводку генератора
+  ansible.builtin.set_fact:
+    loadgen_summary: "{{ loadgen_summary_raw.content | b64decode | from_json }}"
+
+# Итоговые числа считаются здесь, а не только в шаблоне: на них ссылается
+# проверка допуска сверки, а отчёт, который никто не проверяет, — это просто
+# красиво оформленное предположение.
+#
+# Обращение к метрикам k6 только индексной записью: в Jinja `.values`
+# разрешается в метод словаря dict.values, а не в ключ "values".
+- name: Свести итоги прогона
+  ansible.builtin.set_fact:
+    bench_accepted: "{{ loadgen_summary.metrics['postal_accepted_recipients']['values']['count'] | default(0) | int }}"
+    bench_rejected: "{{ loadgen_summary.metrics['postal_rejected_recipients']['values']['count'] | default(0) | int }}"
+    bench_dropped: "{{ loadgen_summary.metrics['dropped_iterations']['values']['count'] | default(0) | int }}"
+    bench_queued_now: "{{ queue_left.query_result[0][0].total | default(0) | int }}"
+    bench_in_flight: "{{ queue_left.query_result[0][0].in_flight | default(0) | int }}"
+  run_once: true
+
+- name: Вычислить расхождение сверки
+  ansible.builtin.set_fact:
+    # Терминальные корзины берём из фактических статусов, а не из
+    # заранее известного списка: неучтённый статус иначе молча выпал бы
+    # из тождества и превратился бы в «не учтено» без объяснения.
+    bench_terminal: "{{ bench_buckets.values() | map('int') | sum }}"
+    bench_unaccounted: "{{ (bench_accepted | int) - (bench_buckets.values() | map('int') | sum) - (bench_queued_now | int) }}"
+  run_once: true
+
+- name: Создать каталог отчётов
+  ansible.builtin.file:
+    path: "{{ bench_reports_dir }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  run_once: true
+
+- name: Собрать отчёт
+  ansible.builtin.template:
+    src: report.md.j2
+    dest: "{{ bench_reports_dir }}/{{ bench_run_id }}.md"
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+
+# Прогон, в котором сверка не сошлась, не является результатом: расхождение
+# означает либо потерю писем, либо потерю строк лога. Отчёт при этом остаётся
+# на диске — по нему и разбираются с причиной.
+- name: Проверить, что сверка сошлась
+  ansible.builtin.assert:
+    that:
+      - bench_accepted | int > 0
+      - (bench_unaccounted | int | abs) <= (bench_accepted | int) * (bench_reconcile_tolerance | float)
+    fail_msg: >-
+      Сверка не сошлась: принято {{ bench_accepted }}, не учтено
+      {{ bench_unaccounted }} при допуске
+      {{ (bench_reconcile_tolerance | float) * 100 }} %.
+      Подробности в {{ bench_reports_dir }}/{{ bench_run_id }}.md
+    success_msg: "Сверка сошлась, расхождение {{ bench_unaccounted }} из {{ bench_accepted }}."
+  run_once: true
+
+- name: Показать путь к отчёту
+  ansible.builtin.debug:
+    msg: "Отчёт: {{ bench_reports_dir }}/{{ bench_run_id }}.md"
+  run_once: true

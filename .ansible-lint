@@ -1,0 +1,20 @@
+---
+profile: moderate
+
+exclude_paths:
+  - .github/
+  - reports/
+  - .ansible_facts/
+
+skip_list:
+  # Роли стенда запускаются только своими плейбуками, метаданные Galaxy
+  # им не нужны.
+  - meta-no-info
+  # Плейбуки жизненного цикла (reset, benchmark, calibrate) неидемпотентны
+  # по замыслу: протокол сравнения требует одинакового стартового состояния
+  # перед каждым прогоном.
+  - no-changed-when
+
+warn_list:
+  - experimental
+  - command-instead-of-module

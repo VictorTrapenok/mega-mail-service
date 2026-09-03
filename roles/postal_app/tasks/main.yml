@@ -1,0 +1,72 @@
+---
+- name: Создать каталоги Postal
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ postal_dir }}"
+    - "{{ postal_config_dir }}"
+    - "{{ postal_dir }}/scripts"
+
+# Postal при network_mode: host унаследовал бы хостовой /etc/resolv.conf,
+# то есть systemd-resolved на 127.0.0.53, который MX-запросы форвардит наружу.
+# Хостовое разрешение имён не трогаем — подсовываем отдельный файл.
+- name: Подготовить resolv.conf для контейнеров Postal
+  ansible.builtin.copy:
+    dest: "{{ test_dns_resolv_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      nameserver {{ test_dns_addr }}
+      options timeout:{{ postal_dns.timeout }} attempts:2
+
+# Ключ подписи — единственное, что остаётся в /config: всё остальное
+# задаётся переменными окружения, которые Konfig читает раньше YAML.
+- name: Сгенерировать ключ подписи
+  ansible.builtin.command:
+    argv: [openssl, genrsa, "-out", "{{ postal_config_dir }}/signing.key", "{{ postal_signing_key_bits }}"]
+    creates: "{{ postal_config_dir }}/signing.key"
+
+- name: Выставить права на ключ подписи
+  ansible.builtin.file:
+    path: "{{ postal_config_dir }}/signing.key"
+    # UID 999 — пользователь postal внутри образа.
+    owner: "999"
+    mode: "0600"
+
+- name: Развернуть compose-файл Postal
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ postal_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезапустить Postal
+
+- name: Запустить Postal
+  community.docker.docker_compose_v2:
+    project_src: "{{ postal_dir }}"
+    state: present
+    wait: true
+    wait_timeout: 180
+
+- name: Применить отложенный перезапуск Postal
+  ansible.builtin.meta: flush_handlers
+
+# Health-сервер при занятом порте перехватывает EADDRINUSE и просто пишет
+# в лог, поэтому «сервис запустился» и «сервис наблюдаем» — разные факты.
+- name: Проверить, что все health-эндпоинты воркеров отвечают
+  ansible.builtin.uri:
+    url: "http://{{ svc_ip }}:{{ postal_worker_health_port_base + item }}/health"
+    status_code: 200
+  loop: "{{ range(postal_worker_replicas | int) | list }}"
+  when: inventory_hostname in (groups['postal_workers'] | default([]))
+  retries: 10
+  delay: 3
+  register: worker_health
+  until: worker_health is succeeded

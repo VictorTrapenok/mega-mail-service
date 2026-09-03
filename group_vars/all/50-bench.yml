@@ -1,0 +1,49 @@
+---
+# Профиль нагрузки и параметры прогона.
+#
+# Основной профиль ЗАМОРОЖЕН и не меняется между сборками — иначе сравнение
+# теряет смысл. Дополнительные профили не подменяют основной.
+
+bench_profile: primary
+
+bench_profiles:
+  primary:
+    # 1 получатель на письмо, тогда recipients == messages и сверка простая.
+    recipients_per_message: 1
+    mime_size_bytes: 102400
+    # Кардинальность доменов принципиальна: batch_key = "outgoing-<domain>"
+    # собирает до 100 писем в батч, поэтому отправка в один домен дарит Postal
+    # бесплатный примерно стократный выигрыш и делает базу нечестной.
+    destination_domains: 1000
+    destination_skew: zipf
+    tracking: false
+    dkim: true
+    webhooks: false
+    prefill_recipients: 0
+
+# Целевая скорость, получателей в секунду.
+# 5 млн за 24 ч = 58 rcpt/s в среднем.
+bench_target_rate: 58
+
+# Фазы прогона, секунды.
+bench_warmup_s: 180
+bench_duration_s: 900
+bench_drain_timeout_s: 900
+
+# Класс прогона: debug (всё на одном хосте, для сравнения сборок непригоден)
+# или scored (генератор, SUT и sink на разных хостах).
+# Проставляется preflight'ом автоматически и попадает в отчёт.
+bench_run_class: "{{ 'debug' if (groups['load_generators'] | intersect(groups['postal_workers'])) else 'scored' }}"
+
+# Калибровка: во сколько раз связка генератор→sink должна опережать цель.
+# Если запаса нет, измеряем Postfix, а думаем, что измеряем Postal.
+bench_calibration_headroom: 2.0
+
+# Частота опроса лёгких сэмплеров (глубина очереди, docker stats), секунды.
+bench_sample_interval_s: 5
+
+# Допустимое расхождение сверки, доля.
+bench_reconcile_tolerance: 0.01
+
+# Куда складываются отчёты на управляющей машине.
+bench_reports_dir: "{{ playbook_dir }}/../reports"

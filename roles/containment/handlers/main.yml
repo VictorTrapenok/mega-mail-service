@@ -1,0 +1,9 @@
+---
+- name: Перечитать unit-файлы systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Перезагрузить mailguard
+  ansible.builtin.command:
+    argv: [/usr/sbin/nft, -f, /etc/nftables.d/mailguard.nft]
+  changed_when: true

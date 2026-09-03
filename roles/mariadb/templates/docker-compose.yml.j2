@@ -1,0 +1,39 @@
+{{ ansible_managed | comment }}
+name: stand-db
+
+services:
+  mariadb:
+    image: {{ mariadb_image_ref }}
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: "{{ mariadb_root_password }}"
+      MARIADB_DATABASE: "{{ postal_main_db_name }}"
+      MARIADB_USER: "{{ mariadb_postal_user }}"
+      MARIADB_PASSWORD: "{{ mariadb_postal_password }}"
+    ports:
+      - "{{ svc_ip }}:{{ mariadb_port }}:3306"
+    volumes:
+      - {{ mariadb_dir }}/conf.d:/etc/mysql/conf.d:ro
+      - stand_db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "{{ mariadb_limits.cpus }}"
+          memory: "{{ mariadb_limits.memory }}"
+{% if mariadb_cpuset %}
+    # cpuset, а не квота CPU: квота CFS душит контейнер на границах
+    # 100-мс периодов, показывая среднюю загрузку заметно ниже 100 %.
+    cpuset: "{{ mariadb_cpuset }}"
+{% endif %}
+
+volumes:
+  # Именованный том: reset в режиме snapshot пересоздаёт именно его,
+  # и это единственный способ уравнять прогретость буферного пула
+  # и разметку табличных пространств между прогонами.
+  stand_db_data: {}

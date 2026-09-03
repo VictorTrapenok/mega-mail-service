@@ -1,0 +1,214 @@
+---
+# Один измеряемый прогон: сэмплеры -> прогрев -> нагрузка -> дренаж.
+#
+# Эта роль НЕидемпотентна по замыслу. Протокол сравнения требует одинакового
+# стартового состояния перед каждым прогоном, поэтому reset.yml запускается
+# отдельно и до неё.
+#
+# Прогрев и рабочая фаза — ДВА отдельных запуска генератора. Иначе итоговая
+# сводка k6 содержала бы сумму обеих фаз, а окно измерения и запрос сверки
+# покрывали бы только вторую, и «принято» никогда не сошлось бы с «доставлено».
+
+- name: Создать каталог прогона
+  ansible.builtin.file:
+    path: "{{ bench_dir }}/{{ bench_run_id }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0777"
+
+- name: Разложить сэмплеры
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ bench_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - queue_sampler.sh
+    - stats_sampler.sh
+
+- name: Запустить сэмплер очереди
+  ansible.builtin.shell:
+    cmd: >-
+      nohup {{ bench_dir }}/queue_sampler.sh
+      {{ bench_dir }}/{{ bench_run_id }}/queue.csv
+      > /dev/null 2>&1 & echo $!
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when: inventory_hostname in groups['postal_main_db']
+
+- name: Запустить сэмплер ресурсов
+  ansible.builtin.shell:
+    cmd: >-
+      nohup {{ bench_dir }}/stats_sampler.sh
+      {{ bench_dir }}/{{ bench_run_id }}/stats-{{ inventory_hostname }}.csv
+      > /dev/null 2>&1 & echo $!
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+- name: Прогрев
+  ansible.builtin.command:
+    argv: >-
+      {{ bench_loadgen_argv + bench_loadgen_cpuset_argv
+         + ['-e', 'BENCH_PHASE=warmup',
+            '-e', 'BENCH_DURATION=' ~ bench_warmup_s ~ 's',
+            loadgen_image_ref, 'run', '/scripts/send.js'] }}
+  delegate_to: "{{ groups['load_generators'] | first }}"
+  run_once: true
+  changed_when: true
+
+# --- Начало окна измерения ------------------------------------------------
+# Время берётся живыми часами на хосте основной БД, а не из ansible_date_time:
+# тот факт снимается один раз при сборе фактов и в течение плея не меняется,
+# из-за чего окно получалось бы отрицательным, а запрос сверки не находил бы
+# ни одной строки. Часы именно того хоста, чьи отметки времени фильтруются.
+- name: Отметить начало окна измерения
+  ansible.builtin.command:
+    argv: [date, -u, +%s]
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+  changed_when: false
+  register: clock_start
+
+- name: Снять счётчик доставок приёмника до окна
+  ansible.builtin.shell:
+    cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: sink_before
+
+- name: Зафиксировать начало окна
+  ansible.builtin.set_fact:
+    bench_window_start: "{{ clock_start.stdout | trim }}"
+    bench_sink_before: "{{ sink_before.results | map(attribute='stdout') | map('trim') | map('int') | sum }}"
+  run_once: true
+
+- name: Рабочая нагрузка
+  ansible.builtin.command:
+    argv: >-
+      {{ bench_loadgen_argv + bench_loadgen_cpuset_argv
+         + ['-e', 'BENCH_PHASE=steady',
+            '-e', 'BENCH_DURATION=' ~ bench_duration_s ~ 's',
+            loadgen_image_ref, 'run', '/scripts/send.js'] }}
+  delegate_to: "{{ groups['load_generators'] | first }}"
+  run_once: true
+  changed_when: true
+  register: loadgen_result
+
+- name: Отметить конец окна измерения
+  ansible.builtin.command:
+    argv: [date, -u, +%s]
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+  changed_when: false
+  register: clock_end
+
+- name: Снять счётчик доставок приёмника после окна
+  ansible.builtin.shell:
+    cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: sink_after_load
+
+- name: Зафиксировать конец окна
+  ansible.builtin.set_fact:
+    bench_window_end: "{{ clock_end.stdout | trim }}"
+  run_once: true
+
+# Дренаж: ингресс остановлен (генератор отработал), ждём опустошения очереди.
+# Время дренажа — самостоятельный результат: оно показывает, успевает ли
+# доставка за приёмом.
+- name: Дождаться опустошения очереди
+  community.mysql.mysql_query:
+    login_host: "{{ postal_main_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_main_db_name }}"
+    query: "SELECT COUNT(*) AS n FROM queued_messages"
+  register: drain_check
+  until: (drain_check.query_result[0][0].n | int) == 0
+  retries: "{{ ((bench_drain_timeout_s | int) / 10) | int }}"
+  delay: 10
+  # Незавершившийся дренаж — это РЕЗУЛЬТАТ, а не сбой: он означает, что
+  # доставка не поспевает за приёмом. Поэтому прогон не роняем, но и не
+  # выдаём за успешный: факт попадает в отчёт отдельной строкой.
+  failed_when: false
+  changed_when: false
+  run_once: true
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+
+- name: Отметить конец дренажа
+  ansible.builtin.command:
+    argv: [date, -u, +%s]
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+  changed_when: false
+  register: clock_drain
+
+- name: Снять счётчик доставок приёмника после дренажа
+  ansible.builtin.shell:
+    cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: sink_after_drain
+
+- name: Зафиксировать итоги прогона
+  ansible.builtin.set_fact:
+    bench_drain_end: "{{ clock_drain.stdout | trim }}"
+    bench_drained: "{{ (drain_check.query_result[0][0].n | int) == 0 }}"
+    bench_queue_left_after_drain: "{{ drain_check.query_result[0][0].n | int }}"
+    # Доставку считаем ОКНОМ, а не всем логом: иначе в неё попадали бы
+    # прогрев и остатки предыдущих прогонов, и независимая проверка доставки
+    # имела бы встроенное расхождение с оконной выборкой из БД.
+    bench_delivered: >-
+      {{ (sink_after_drain.results | map(attribute='stdout')
+          | map('trim') | map('int') | sum) - (bench_sink_before | int) }}
+    bench_delivered_at_window_end: >-
+      {{ (sink_after_load.results | map(attribute='stdout')
+          | map('trim') | map('int') | sum) - (bench_sink_before | int) }}
+  run_once: true
+
+- name: Остановить сэмплеры
+  ansible.builtin.shell:
+    cmd: "pkill -f '{{ bench_dir }}/(queue|stats)_sampler.sh' || true"
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+# Без этого CSV остаются на удалённых хостах, и артефакт прогона
+# не самодостаточен — а именно самодостаточность делает результат публикуемым.
+- name: Забрать артефакты прогона на управляющую машину
+  ansible.builtin.fetch:
+    src: "{{ item }}"
+    dest: "{{ bench_reports_dir }}/{{ bench_run_id }}/"
+    flat: false
+    fail_on_missing: false
+  loop:
+    - "{{ bench_dir }}/{{ bench_run_id }}/queue.csv"
+    - "{{ bench_dir }}/{{ bench_run_id }}/stats-{{ inventory_hostname }}.csv"
+
+- name: Забрать сводки генератора
+  ansible.builtin.fetch:
+    src: "{{ loadgen_results_dir }}/{{ bench_run_id }}-{{ item }}-summary.json"
+    dest: "{{ bench_reports_dir }}/{{ bench_run_id }}/"
+    flat: false
+    fail_on_missing: false
+  loop: [warmup, steady]
+  delegate_to: "{{ groups['load_generators'] | first }}"
+  run_once: true

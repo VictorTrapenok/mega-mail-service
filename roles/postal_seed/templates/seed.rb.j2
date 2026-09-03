@@ -1,0 +1,134 @@
+# {{ ansible_managed }}
+#
+# Сидирование данных Postal.
+#
+# Административного API у Postal нет: config/routes.rb отдаёт только
+# /api/v1/send/* и /api/v1/messages/*, остальное — HTML-контроллеры за сессией.
+# Единственная объектосоздающая CLI-команда, postal make-user, интерактивна
+# (HighLine). Прямой SQL опасен: Server в after_create создаёт свою message-БД,
+# Domain в before_create генерирует DKIM-ключ.
+#
+# Поэтому — rails runner, и только через модели.
+
+require "json"
+
+user = User.find_or_initialize_by(email_address: {{ postal_admin_email | to_json }})
+if user.new_record?
+  user.first_name = {{ postal_admin_first_name | to_json }}
+  user.last_name  = {{ postal_admin_last_name | to_json }}
+  user.password   = {{ postal_admin_password | to_json }}
+  user.password_confirmation = {{ postal_admin_password | to_json }}
+  user.admin = true
+  user.email_verified_at = Time.now
+  user.save!
+end
+
+org = Organization.find_or_initialize_by(permalink: {{ postal_organization_permalink | to_json }})
+if org.new_record?
+  org.name = {{ postal_organization_name | to_json }}
+  org.owner_id = user.id
+  org.save!
+end
+
+OrganizationUser.find_or_create_by!(organization_id: org.id, user_id: user.id) do |ou|
+  ou.admin = true
+  ou.all_servers = true
+  ou.user_type = "User"
+end
+
+# Server в after_create вызывает message_db.provisioner.provision —
+# без этого отдельная база сообщений сервера просто не появится.
+server = Server.find_or_initialize_by(organization_id: org.id,
+                                      permalink: {{ postal_server_permalink | to_json }})
+if server.new_record?
+  server.name = {{ postal_server_name | to_json }}
+  server.mode = "Live"
+  server.save!
+end
+
+# Лимит отправки и retention обнуляем: иначе часть писем уйдёт в Held
+# по send_limit, а суточная задача очистки может дропнуть raw-таблицу
+# посреди прогона. Это колонки сервера, а не переменные окружения.
+server.update_columns(
+  send_limit: nil,
+  message_retention_days: nil,
+  raw_message_retention_days: nil,
+  raw_message_retention_size: nil
+)
+
+domain = Domain.find_or_initialize_by(owner_type: "Server", owner_id: server.id,
+                                      name: {{ postal_test_domain | to_json }})
+if domain.new_record?
+  domain.server_id = server.id
+  domain.verification_method = "DNS"
+  domain.outgoing = true
+  domain.incoming = true
+  domain.use_for_any = true
+  domain.save!
+end
+
+# Credential#generate_key безусловно выставляет ключ новой записи, а
+# validate_key_cannot_be_changed запрещает менять его через модель. Поэтому
+# фиксируем значение через update_column: иначе повторный запуск сидирования
+# молча ротировал бы ключи, генератор начал бы получать 535, и это выглядело бы
+# как регрессия тестируемой сборки.
+def pin_credential(server, type, name, key)
+  cred = Credential.find_or_initialize_by(server_id: server.id, type: type, name: name)
+  cred.save! if cred.new_record?
+  cred.update_column(:key, key) unless cred.key == key
+  cred.reload
+end
+
+api_cred  = pin_credential(server, "API",  "bench-api",  {{ postal_api_key | to_json }})
+smtp_cred = pin_credential(server, "SMTP", "bench-smtp", {{ postal_smtp_key | to_json }})
+
+{% if postal_use_ip_pools %}
+pool = IPPool.find_or_create_by!(name: "bench") { |p| p.default = true }
+OrganizationIPPool.find_or_create_by!(organization_id: org.id, ip_pool_id: pool.id)
+server.update_column(:ip_pool_id, pool.id)
+
+{% for h in groups['postal_workers'] | default([]) %}
+{% for ip in hostvars[h].postal_sending_ips | default([]) %}
+# Адрес обязан физически присутствовать на воркере: он берёт из очереди только
+# строки, чей ip_address_id совпал с адресом его собственного netns или равен
+# NULL. Иначе очередь встаёт молча — осиротевшие строки не видит даже
+# tidy-задача, потому что у них locked_at IS NULL.
+IPAddress.find_or_create_by!(ipv4: {{ ip.ipv4 | to_json }}) do |a|
+  a.ip_pool_id = pool.id
+  a.hostname = {{ ip.hostname | to_json }}
+  a.priority = 100
+end
+{% endfor %}
+{% endfor %}
+{% endif %}
+
+{% if postal_force_domain_verification %}
+# Обход проверки DNS. Отмечается в отчёте как снижение достоверности:
+# единственный гейт на отправку — verified_at, но резолвинг всё равно остаётся
+# на горячем пути доставки и является самостоятельным кандидатом в узкое место.
+domain.mark_as_verified unless domain.verified?
+{% endif %}
+
+domain.reload
+
+# Имя базы сообщений нужно сверке и сэмплеру очереди. Берём у самого Postal.
+# Запасного пути здесь сознательно нет: неверное имя базы означало бы, что
+# вся сверка молча считает пустую выборку, и падение на этом месте
+# предпочтительнее.
+message_db_name = server.message_db.database_name
+
+puts "POSTAL_SEED_JSON:" + {
+  server_id: server.id,
+  server_token: server.token,
+  organization_id: org.id,
+  message_db_name: message_db_name,
+  domain_id: domain.id,
+  domain_name: domain.name,
+  domain_verified: !domain.verified_at.nil?,
+  dkim_record_name: domain.dkim_record_name,
+  dkim_record: domain.dkim_record,
+  spf_record: domain.spf_record,
+  dns_verification_string: domain.dns_verification_string,
+  api_key: api_cred.key,
+  smtp_key: smtp_cred.key
+}.to_json

@@ -1,0 +1,56 @@
+---
+# Дешёвый гейт: синтаксис, разбор inventory и проверка на запрещённые секреты.
+#
+# Полноценного прогона бенчмарка здесь нет и не планируется: раннеру не хватит
+# ресурсов, а исходящий TCP/25 у GitHub заблокирован на уровне платформы.
+
+name: lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Установить инструменты
+        run: pip install ansible-core ansible-lint yamllint
+
+      - name: Установить коллекции
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: yamllint
+        run: yamllint .
+
+      - name: ansible-lint
+        run: ansible-lint
+
+      - name: Разбор inventory
+        run: |
+          for inv in inventories/*/; do
+            echo "== $inv"
+            ansible-inventory -i "$inv" --graph
+          done
+
+      - name: Проверка синтаксиса плейбуков
+        run: |
+          for pb in playbooks/*.yml; do
+            ansible-playbook -i inventories/single-host --syntax-check "$pb"
+          done
+
+      # Лабораторные пароли в репозитории — сознательное решение. Запрещены
+      # ровно четыре вещи, и именно их ищет эта проверка.
+      - name: Секреты, которых здесь быть не должно
+        run: |
+          if grep -rIlE 'BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY' \
+               --exclude-dir=.git . ; then
+            echo "Найден приватный ключ — в репозитории их быть не должно"
+            exit 1
+          fi

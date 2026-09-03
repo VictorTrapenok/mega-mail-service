@@ -1,0 +1,51 @@
+{{ ansible_managed | comment(decoration='; ') }}
+$ORIGIN {{ postal_test_domain }}.
+$TTL 60
+
+@   IN SOA ns.{{ postal_test_domain }}. admin.{{ postal_test_domain }}. (
+        1          ; serial — лабораторная зона, версионирование не нужно
+        3600       ; refresh
+        600        ; retry
+        86400      ; expire
+        60 )       ; minimum
+
+@                   IN NS    ns.{{ postal_test_domain }}.
+ns                  IN A     {{ test_dns_addr }}
+
+; --- Инфраструктура стенда ------------------------------------------------
+{# postal.<domain> — это POSTAL_WEB_HOSTNAME: именно его Rails проверяет
+   в заголовке Host, и по нему генератор обращается к API. #}
+postal              IN A     {{ postal_web_addrs | first }}
+{% for h in groups['postfix_sinks'] | default([]) %}
+sink-{{ loop.index }}         IN A     {{ hostvars[h].svc_ip }}
+{% endfor %}
+
+; Имена HELO исходящих адресов. Postal берёт HELO из ip_addresses.hostname,
+; и приёмная сторона должна уметь их резолвить.
+{% for h in groups['postal_workers'] | default([]) %}
+{% for ip in hostvars[h].postal_sending_ips | default([]) %}
+{{ ip.hostname | replace('.' ~ postal_test_domain, '') }}    IN A     {{ ip.ipv4 }}
+{% endfor %}
+{% endfor %}
+
+; --- Записи домена отправителя --------------------------------------------
+; Заполняются во втором проходе, после сидирования: имя и значение DKIM-записи
+; генерирует сам Postal (Domain#before_create :generate_dkim_key), заранее
+; их знать нельзя.
+{% if postal_seed is defined %}
+@                   IN TXT   "v=spf1 a mx include:{{ postal_dns.spf_include }} ~all"
+{# Domain#dns_verification_string уже возвращает строку вместе с префиксом
+   («<prefix> <token>»), поэтому добавлять префикс ещё раз нельзя —
+   verify_with_dns тогда не найдёт совпадения. #}
+@                   IN TXT   "{{ postal_seed.dns_verification_string }}"
+{{ postal_seed.dkim_record_name }} IN TXT ( "{{ postal_seed.dkim_record }}" )
+{{ postal_dns.custom_return_path_prefix }} IN CNAME {{ postal_dns.return_path_domain }}.
+{% endif %}
+
+; SPF include и return path обязаны резолвиться, иначе проверка домена
+; в Postal не пройдёт, а без verified_at любая отправка падает с
+; 530 From/Sender name is not valid.
+spf                 IN TXT   "v=spf1 ip4:{{ postal_smtp_addrs | first }} ~all"
+rp                  IN A     {{ postal_smtp_addrs | first }}
+routes              IN A     {{ postal_web_addrs | first }}
+track               IN A     {{ postal_web_addrs | first }}

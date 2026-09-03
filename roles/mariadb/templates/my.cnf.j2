@@ -1,0 +1,29 @@
+{{ ansible_managed | comment }}
+
+[mysqld]
+# Postal требует ROW_FORMAT=DYNAMIC для всех таблиц.
+innodb_default_row_format = dynamic
+innodb_file_per_table     = ON
+
+{% for key, value in mariadb_pinned | dictsort %}
+{{ key }} = {{ value }}
+{% endfor %}
+
+{% if not mariadb_binlog_enabled %}
+# Бинлог на стенде не нужен и удваивает объём записи на диск.
+skip-log-bin
+{% endif %}
+
+{% if mariadb_perf_schema %}
+performance_schema = ON
+performance_schema_digests_size = 20000
+performance_schema_instrument = 'statement/%=ON'
+performance_schema_instrument = 'wait/lock/%=ON'
+performance_schema_consumer_statements_digest = ON
+performance_schema_consumer_events_statements_history_long = ON
+{% else %}
+performance_schema = OFF
+{% endif %}
+
+character-set-server = utf8mb4
+collation-server     = utf8mb4_general_ci

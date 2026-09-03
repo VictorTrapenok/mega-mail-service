@@ -1,0 +1,52 @@
+---
+# Приведение ссылки на образ Postal к неизменяемому digest'у.
+#
+# Тег для этого не годится: latest и stable на ghcr.io — движущиеся указатели
+# с разными digest'ами, плавающих тегов 3 и 3.3 не существует. Baseline,
+# закреплённый тегом, может измениться между первым и последним прогоном серии,
+# и вся серия окажется сравнением разных образов.
+
+- name: Отклонить движущиеся и неполные теги
+  ansible.builtin.assert:
+    that:
+      - postal_image_ref is not match('^(' + (postal_image_forbidden_refs | map('regex_replace', '\*', '.*') | join('|')) + ')$')
+    fail_msg: >-
+      Тег «{{ postal_image_ref }}» запрещён для измерительных прогонов.
+      latest и stable движутся, а ci-* собран с --target ci без precompile
+      ассетов: web отдаёт 500, оставаясь «живым» для проверки на подключение.
+      Укажите версию или digest.
+
+- name: Определить, задан ли уже digest
+  ansible.builtin.set_fact:
+    postal_image_is_digest: "{{ postal_image_ref is match('^sha256:[0-9a-f]{64}$') }}"
+
+- name: Разрешить тег в digest индекса образа
+  ansible.builtin.command:
+    argv:
+      - docker
+      - buildx
+      - imagetools
+      - inspect
+      - "--format"
+      - "{{ '{{' }}.Manifest.Digest{{ '}}' }}"
+      - "{{ postal_image_repo }}:{{ postal_image_ref }}"
+  register: postal_image_digest_lookup
+  changed_when: false
+  when: not postal_image_is_digest
+
+- name: Зафиксировать неизменяемую ссылку на образ
+  ansible.builtin.set_fact:
+    postal_image_resolved: >-
+      {{ postal_image_repo }}@{{
+        postal_image_ref if postal_image_is_digest
+        else postal_image_digest_lookup.stdout | trim
+      }}
+    cacheable: true
+
+- name: Загрузить образ
+  community.docker.docker_image_pull:
+    name: "{{ postal_image_resolved }}"
+
+- name: Показать, какой образ будет развёрнут
+  ansible.builtin.debug:
+    msg: "Postal: {{ postal_image_resolved }} (из ссылки «{{ postal_image_ref }}»)"

@@ -1,0 +1,30 @@
+---
+# Образы.
+#
+# postal_image_ref может быть тегом ИЛИ digest'ом, но роль postal_image всегда
+# приводит его к digest'у и разворачивает именно digest, записывая оба значения
+# в отчёт о прогоне. Причина: latest и stable на ghcr.io — движущиеся указатели
+# с разными digest'ами, плавающих тегов 3 и 3.3 не существует, а baseline не должен
+# меняться между первым и последним прогоном серии.
+postal_image_repo: "ghcr.io/postalserver/postal"
+postal_image_ref: "3.3.7"
+
+# Теги, которые роль обязана отклонить.
+# ci-* собраны с --target ci, без precompile ассетов: production.rb выставляет
+# config.assets.compile = false, поэтому web отдаёт 500 на любой странице,
+# а TCP-healthcheck при этом остаётся зелёным.
+postal_image_forbidden_refs:
+  - "latest"
+  - "stable"
+  - "branch-*"
+  - "ci-*"
+
+# Postal поддерживает MariaDB 10.6+; MySQL официально не поддерживается.
+mariadb_image_ref: "mariadb:11.4"
+
+coredns_image_ref: "coredns/coredns:1.11.3"
+
+# Postfix-sink и генератор собираются локально из Dockerfile в roles/*/files,
+# чтобы не зависеть от чужих образов сомнительного происхождения.
+postfix_sink_image: "postal-bench/postfix-sink:local"
+loadgen_image_ref: "grafana/k6:0.53.0"

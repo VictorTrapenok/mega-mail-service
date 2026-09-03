@@ -1,0 +1,12 @@
+{{ ansible_managed | comment }}
+# Единый источник времени для всех хостов стенда: латентность считается как
+# разница отметок, снятых на разных машинах.
+
+{% for server in common_ntp_servers %}
+pool {{ server }} iburst
+{% endfor %}
+
+driftfile /var/lib/chrony/chrony.drift
+makestep 1.0 3
+rtcsync
+logdir /var/log/chrony

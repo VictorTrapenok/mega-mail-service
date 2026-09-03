@@ -1,0 +1,125 @@
+---
+# Калибровка вспомогательной цепи.
+#
+# Без неё легко измерить Postfix и не заметить: дефолты Postfix ограничивают
+# приём раньше, чем упирается Postal, и просадка выглядит как результат
+# измерения Postal. Плейбук ПАДАЕТ, если запаса нет, а не предупреждает.
+
+- name: Собрать факты со всех хостов
+  hosts: all
+  gather_facts: true
+  tasks: []
+
+- name: Измерить потолок связки генератор → приёмник
+  hosts: load_generators
+  become: true
+  vars:
+    # Скобки обязательны. Без них Jinja разбирает выражение как
+    # a * (b | round | int), то есть округляет коэффициент запаса,
+    # а не произведение, и целевая скорость калибровки молча становится
+    # target x 2 при любом значении bench_calibration_headroom.
+    calib_rate: "{{ ((bench_target_rate | int) * (bench_calibration_headroom | float)) | round | int }}"
+    calib_messages: 20000
+  tasks:
+    - name: Снять счётчик приёмника до калибровки
+      ansible.builtin.shell:
+        cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ groups['postfix_sinks'] | first }}"
+      register: calib_before
+      changed_when: false
+
+    - name: Отметить время начала
+      ansible.builtin.command:
+        argv: [date, -u, +%s]
+      changed_when: false
+      register: calib_t0
+
+    # --entrypoint обязателен: ENTRYPOINT образа приёмника запускает Postfix
+    # и игнорирует переданную команду, поэтому без переопределения
+    # smtp-source не выполнялся бы вовсе, а калибровка «проходила» бы,
+    # ничего не измерив.
+    - name: Прогнать нагрузку напрямую в приёмник, минуя Postal
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - "--rm"
+          - "--network=host"
+          - "--entrypoint"
+          - /usr/sbin/smtp-source
+          - "{{ postfix_sink_image }}"
+          - "-s"
+          - "20"
+          - "-l"
+          - "{{ bench_profiles[bench_profile].mime_size_bytes }}"
+          - "-m"
+          - "{{ calib_messages }}"
+          - "-f"
+          - "bench@{{ postal_test_domain }}"
+          - "-t"
+          - "sink@d0001.{{ postal_test_domain }}"
+          - "{{ postfix_sink_addrs | first }}:{{ postfix_sink_port }}"
+      changed_when: true
+
+    - name: Отметить время окончания
+      ansible.builtin.command:
+        argv: [date, -u, +%s]
+      changed_when: false
+      register: calib_t1
+
+    - name: Снять счётчик приёмника после калибровки
+      ansible.builtin.shell:
+        cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ groups['postfix_sinks'] | first }}"
+      register: calib_after
+      changed_when: false
+
+    # Скорость, а не количество. Проверка «дошли ли все сообщения» прошла бы
+    # и на приёмнике, который принимает их втрое медленнее нужного, —
+    # то есть охраняла бы не от того.
+    - name: Вычислить достигнутую скорость
+      ansible.builtin.set_fact:
+        calib_delivered: "{{ (calib_after.stdout | trim | int) - (calib_before.stdout | trim | int) }}"
+        calib_seconds: "{{ [(calib_t1.stdout | trim | int) - (calib_t0.stdout | trim | int), 1] | max }}"
+
+    - name: Записать результат калибровки
+      ansible.builtin.copy:
+        dest: "{{ bench_reports_dir }}/calibration-{{ calib_t1.stdout | trim }}.md"
+        mode: "0644"
+        content: |
+          # Калибровка вспомогательной цепи
+
+          Генератор писем smtp-source отправлял напрямую в приёмник, минуя Postal.
+
+          - принято приёмником: {{ calib_delivered }} сообщений за {{ calib_seconds }} с
+          - достигнутая скорость: {{ ((calib_delivered | int) / (calib_seconds | int)) | round(1) }} сообщений/с
+          - целевая скорость прогона: {{ bench_target_rate }} получателей/с
+          - требуемый запас: {{ bench_calibration_headroom }}x = {{ calib_rate }} сообщений/с
+          - размер сообщения: {{ bench_profiles[bench_profile].mime_size_bytes }} байт
+
+          smtp-source работает в замкнутой модели: он шлёт настолько быстро,
+          насколько принимает приёмник, поэтому измеренная величина —
+          это потолок вспомогательной цепи, а не заданная скорость.
+      delegate_to: localhost
+
+    - name: Проверить запас относительно целевой скорости
+      ansible.builtin.assert:
+        that:
+          - (calib_delivered | int) >= (calib_messages | int)
+          - ((calib_delivered | int) / (calib_seconds | int)) >= (calib_rate | int)
+        fail_msg: >-
+          Вспомогательная цепь держит
+          {{ ((calib_delivered | int) / (calib_seconds | int)) | round(1) }} сообщений/с
+          при требуемых {{ calib_rate }} ({{ bench_calibration_headroom }}x
+          от {{ bench_target_rate }}). Прогон Postal измерял бы приёмник,
+          а не Postal. Проверьте in_flow_delay, default_process_limit,
+          smtpd_client_connection_count_limit и не упирается ли лог приёмника
+          в диск.
+        success_msg: >-
+          Приёмник держит
+          {{ ((calib_delivered | int) / (calib_seconds | int)) | round(1) }} сообщений/с
+          при требуемых {{ calib_rate }} — запас подтверждён.

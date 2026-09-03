@@ -1,0 +1,22 @@
+# Кэш фактов Ansible
+.ansible_facts/
+*.retry
+
+# Артефакты прогонов: отчёты коммитим, сырые CSV — нет.
+reports/**/raw/
+reports/**/*.csv.gz
+
+# Коллекции, установленные локально
+collections/
+
+# Секреты, которых в репозитории быть не должно:
+# deploy-key форка, креды registry, продовые DKIM-ключи, продовые дампы.
+*.pem
+*.p12
+id_rsa*
+.registry-auth
+dumps/
+
+__pycache__/
+*.pyc
+.venv/

@@ -1,0 +1,65 @@
+---
+# Сидирование данных и честная верификация домена через DNS стенда.
+#
+# Порядок обязателен и состоит из двух проходов по DNS: имя и значение
+# DKIM-записи генерирует сам Postal при создании домена, поэтому положить
+# их в зону заранее невозможно.
+
+- name: Засеять организацию, сервер, домен и учётные данные
+  hosts: postal_admin
+  become: true
+  roles:
+    - postal_seed
+
+- name: Опубликовать записи домена во втором проходе
+  hosts: test_dns
+  become: true
+  vars:
+    postal_seed: "{{ hostvars[groups['postal_admin'] | first].postal_seed }}"
+  roles:
+    - test_dns
+
+- name: Проверить домен через DNS стенда
+  hosts: postal_admin
+  become: true
+  vars:
+    postal_seed: "{{ hostvars[groups['postal_admin'] | first].postal_seed }}"
+  tasks:
+    - name: Запустить проверку DNS для домена
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - "-f"
+          - "{{ postal_dir }}/docker-compose.yml"
+          - "--profile"
+          - tools
+          - run
+          - "--rm"
+          - "-T"
+          - runner
+          - bundle
+          - exec
+          - rails
+          - runner
+          - >-
+            d = Domain.find({{ postal_seed.domain_id }});
+            d.verify_with_dns;
+            puts "VERIFIED=#{d.verified?}"
+      register: domain_verify
+      changed_when: true
+
+    # Единственный гейт на отправку — verified_at. Без него любая отправка
+    # падает с «530 From/Sender name is not valid», и это выглядит как
+    # неисправность генератора, а не как незавершённая настройка.
+    - name: Убедиться, что домен верифицирован
+      ansible.builtin.assert:
+        that: "'VERIFIED=true' in domain_verify.stdout"
+        fail_msg: >-
+          Домен не прошёл проверку через DNS стенда. Проверьте, что зона
+          отдаёт TXT со строкой верификации и запись DKIM, и что
+          POSTAL_USE_LOCAL_NS_FOR_DOMAIN_VERIFICATION=true — по умолчанию
+          она false, и тогда Postal сначала резолвит NS домена, что на .test
+          не работает. Обходной путь на крайний случай:
+          -e postal_force_domain_verification=true (снижает достоверность
+          прогона и отмечается в отчёте).
