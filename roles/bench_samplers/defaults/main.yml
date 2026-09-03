@@ -1,0 +1,3 @@
+---
+# Требуемое состояние сэмплеров: started или stopped.
+bench_samplers_state: started

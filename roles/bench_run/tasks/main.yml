@@ -9,46 +9,6 @@
 # сводка k6 содержала бы сумму обеих фаз, а окно измерения и запрос сверки
 # покрывали бы только вторую, и «принято» никогда не сошлось бы с «доставлено».
 
-- name: Создать каталог прогона
-  ansible.builtin.file:
-    path: "{{ bench_dir }}/{{ bench_run_id }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0777"
-
-- name: Разложить сэмплеры
-  ansible.builtin.template:
-    src: "{{ item }}.j2"
-    dest: "{{ bench_dir }}/{{ item }}"
-    owner: root
-    group: root
-    mode: "0755"
-  loop:
-    - queue_sampler.sh
-    - stats_sampler.sh
-
-- name: Запустить сэмплер очереди
-  ansible.builtin.shell:
-    cmd: >-
-      nohup {{ bench_dir }}/queue_sampler.sh
-      {{ bench_dir }}/{{ bench_run_id }}/queue.csv
-      > /dev/null 2>&1 & echo $!
-  args:
-    executable: /bin/bash
-  changed_when: true
-  when: inventory_hostname in groups['postal_main_db']
-
-- name: Запустить сэмплер ресурсов
-  ansible.builtin.shell:
-    cmd: >-
-      nohup {{ bench_dir }}/stats_sampler.sh
-      {{ bench_dir }}/{{ bench_run_id }}/stats-{{ inventory_hostname }}.csv
-      > /dev/null 2>&1 & echo $!
-  args:
-    executable: /bin/bash
-  changed_when: true
-
 - name: Прогрев
   ansible.builtin.command:
     argv: >-
@@ -183,25 +143,6 @@
       {{ (sink_after_load.results | map(attribute='stdout')
           | map('trim') | map('int') | sum) - (bench_sink_before | int) }}
   run_once: true
-
-- name: Остановить сэмплеры
-  ansible.builtin.shell:
-    cmd: "pkill -f '{{ bench_dir }}/(queue|stats)_sampler.sh' || true"
-  args:
-    executable: /bin/bash
-  changed_when: true
-
-# Без этого CSV остаются на удалённых хостах, и артефакт прогона
-# не самодостаточен — а именно самодостаточность делает результат публикуемым.
-- name: Забрать артефакты прогона на управляющую машину
-  ansible.builtin.fetch:
-    src: "{{ item }}"
-    dest: "{{ bench_reports_dir }}/{{ bench_run_id }}/"
-    flat: false
-    fail_on_missing: false
-  loop:
-    - "{{ bench_dir }}/{{ bench_run_id }}/queue.csv"
-    - "{{ bench_dir }}/{{ bench_run_id }}/stats-{{ inventory_hostname }}.csv"
 
 - name: Забрать сводки генератора
   ansible.builtin.fetch:

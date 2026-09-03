@@ -19,7 +19,20 @@ bench_profiles:
     tracking: false
     dkim: true
     webhooks: false
-    prefill_recipients: 0
+
+  # Профиль высокой кардинальности доменов. Нужен потому, что запрос батчинга
+  # (batchable_messages) не покрыт индексом и прерывается только по набору
+  # 100 строк с тем же batch_key либо по концу таблицы. Чем реже совпадает
+  # batch_key, тем чаще он доходит до конца, поэтому широкая рассылка стоит
+  # кардинально дороже узкой при той же длине очереди.
+  wide_domains:
+    recipients_per_message: 1
+    mime_size_bytes: 102400
+    destination_domains: 100000
+    destination_skew: zipf
+    tracking: false
+    dkim: true
+    webhooks: false
 
 # Целевая скорость, получателей в секунду.
 # 5 млн за 24 ч = 58 rcpt/s в среднем.
@@ -29,6 +42,33 @@ bench_target_rate: 58
 bench_warmup_s: 180
 bench_duration_s: 900
 bench_drain_timeout_s: 900
+
+# Запас виртуальных пользователей генератора относительно заданной скорости.
+# По закону Литтла скорость R при латентности L требует R*L одновременных VU,
+# поэтому потолок VU сам ограничивает достижимую скорость: при факторе 10
+# прогон не мог подать 58 писем/с, едва латентность приёма дошла до 10 с,
+# и генератор начал ронять итерации. Ненулевой dropped_iterations означает,
+# что ограничил генератор, а не система под тестом.
+bench_max_vu_factor: 30
+
+# --- Предзаполнение очереди -----------------------------------------------
+# Длина очереди — не косметика профиля, а главная переменная стоимости разбора.
+# Оба горячих запроса воркера (захват строки и набор батча) не покрыты ни одним
+# индексом, поэтому на пустой очереди гипотеза о полном переборе не проверяема
+# вообще, а измеренная скорость относится к случаю, которого в проде нет.
+bench_prefill_recipients: 50000
+bench_prefill_burst_vus: 32
+bench_prefill_timeout_s: 3600
+
+# Доля строк, переводимых в отложенные (retry_after в будущем), от 0 до 1.
+# Откладываются самые старые строки по первичному ключу, потому что именно так
+# очередь вырождается в проде: письмо получило временный отказ и осталось
+# в голове таблицы со своим прежним id, а новые письма получают id больше.
+# Запрос захвата идёт по первичному ключу без ORDER BY и останавливается
+# на первой подходящей строке, поэтому неготовая голова таблицы — это ровно то,
+# что превращает захват из O(1) в полный перебор.
+bench_prefill_deferred_share: 0.0
+bench_prefill_deferred_delay_s: 3600
 
 # Класс прогона: debug (всё на одном хосте, для сравнения сборок непригоден)
 # или scored (генератор, SUT и sink на разных хостах).
@@ -47,3 +87,46 @@ bench_reconcile_tolerance: 0.01
 
 # Куда складываются отчёты на управляющей машине.
 bench_reports_dir: "{{ playbook_dir }}/../reports"
+
+# --- Запуск генератора ----------------------------------------------------
+# Команда лежит здесь, а не в defaults роли, по той же причине, что и пути
+# в 15-paths.yml: генератор запускают несколько ролей (bench_run, bench_prefill,
+# bench_ingress), а default роли виден только пока эта роль выполняется.
+#
+# Лимиты применяются здесь: без них контейнер генератора конкурирует
+# с системой под тестом без ограничений, что особенно заметно
+# в отладочной раскладке на одной машине.
+bench_loadgen_argv:
+  - docker
+  - run
+  - "--rm"
+  - "--network=host"
+  - "--cpus={{ loadgen_limits.cpus }}"
+  - "--memory={{ loadgen_limits.memory }}"
+  - "-v"
+  - "{{ loadgen_dir }}:/scripts:ro"
+  - "-v"
+  - "{{ loadgen_results_dir }}:/results"
+  - "-e"
+  - "POSTAL_API_URL=http://{{ postal_web_addrs | first }}:{{ postal_web_port }}"
+  - "-e"
+  - "POSTAL_WEB_HOST={{ postal_web_hostname }}"
+  - "-e"
+  - "POSTAL_API_KEY={{ postal_seed.api_key }}"
+  - "-e"
+  - "BENCH_RUN_ID={{ bench_run_id }}"
+  - "-e"
+  - "BENCH_DOMAIN={{ postal_test_domain }}"
+  - "-e"
+  - "BENCH_DOMAIN_COUNT={{ bench_profiles[bench_profile].destination_domains }}"
+  - "-e"
+  - "BENCH_MIME_SIZE={{ bench_profiles[bench_profile].mime_size_bytes }}"
+  - "-e"
+  - "BENCH_RATE={{ bench_target_rate }}"
+  - "-e"
+  - "BENCH_MAX_VU_FACTOR={{ bench_max_vu_factor }}"
+
+# Привязка генератора к ядрам — только если она задана в inventory.
+# На одной машине это единственный способ не дать генератору отбирать ядра
+# у системы под тестом.
+bench_loadgen_cpuset_argv: "{{ ['--cpuset-cpus=' ~ loadgen_cpuset] if loadgen_cpuset | default('') else [] }}"

@@ -1,0 +1,93 @@
+---
+# Измерение скорости разбора очереди в отрыве от приёма.
+#
+# Очередь набивается заранее при остановленных воркерах, затем ингресс молчит
+# и всё железо достаётся доставке. Знаменатель скорости известен точно, а длину
+# очереди можно задавать: оба горячих запроса воркера не покрыты индексами,
+# поэтому стоимость разбора зависит от длины очереди, и измерение на пустой
+# очереди относится к случаю, которого в проде не бывает.
+#
+# Плейбук НЕидемпотентен по замыслу и не входит в критерий повторяемости.
+
+- name: Собрать факты со всех хостов
+  hosts: all
+  gather_facts: true
+  tasks: []
+
+- name: Присвоить идентификатор прогона
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Взять время живыми часами
+      ansible.builtin.command:
+        argv: [date, -u, "+%Y%m%dT%H%M%SZ"]
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+      register: run_clock
+
+    - name: Зафиксировать идентификатор прогона
+      ansible.builtin.set_fact:
+        bench_run_id: >-
+          {{ lookup('env', 'BENCH_RUN_ID') | default('drain-' ~ (run_clock.stdout | trim), true) }}
+
+- name: Подготовить состояние перед прогоном
+  ansible.builtin.import_playbook: reset.yml
+
+- name: Остановить воркеры доставки
+  hosts: postal_workers
+  become: true
+  tasks:
+    - name: Перевести воркеры в остановленное состояние
+      ansible.builtin.include_role:
+        name: bench_workers
+      vars:
+        bench_workers_state: stopped
+
+- name: Набить очередь и измерить дренаж
+  hosts: postal_main_db:postal_workers:postal_smtp:postfix_sinks:load_generators
+  become: true
+  vars:
+    postal_seed: "{{ hostvars[groups['postal_admin'] | first].postal_seed }}"
+  roles:
+    - role: bench_samplers
+      vars:
+        bench_samplers_state: started
+    - bench_prefill
+    - bench_drain
+    - role: bench_samplers
+      vars:
+        bench_samplers_state: stopped
+
+- name: Собрать отчёт
+  hosts: postal_main_db
+  become: true
+  vars:
+    db_host: "{{ groups['postal_main_db'] | first }}"
+    bench_report_kind: drain
+    postal_seed: "{{ hostvars[groups['postal_admin'] | first].postal_seed }}"
+    # Факт живёт только в кэше: его ставит роль postal_image при развёртывании.
+    # Прогон не должен падать из-за пустого кэша — фактически запущенный образ
+    # отчёт всё равно читает с хоста через docker inspect, и это достовернее.
+    postal_image_resolved: >-
+      {{ hostvars[groups['postal_workers'] | first].postal_image_resolved
+         | default('не определён: кэш фактов пуст, см. фактически запущенный образ', true) }}
+    # Окно сверки охватывает и набивку: письма создаются в ней, а не во время
+    # дренажа, поэтому выборка по одному лишь времени дренажа не нашла бы
+    # в messages ни одной строки.
+    bench_window_start: "{{ hostvars[db_host].bench_prefill_start }}"
+    bench_window_end: "{{ hostvars[db_host].bench_drain_end }}"
+    bench_queue_total: "{{ hostvars[db_host].bench_queue_total }}"
+    bench_queue_ready: "{{ hostvars[db_host].bench_queue_ready }}"
+    bench_queue_deferred: "{{ hostvars[db_host].bench_queue_deferred }}"
+    bench_drain_start: "{{ hostvars[db_host].bench_drain_start }}"
+    bench_drain_end: "{{ hostvars[db_host].bench_drain_end }}"
+    bench_drain_queue_total_at_start: "{{ hostvars[db_host].bench_drain_queue_total_at_start }}"
+    bench_drain_queue_ready_at_start: "{{ hostvars[db_host].bench_drain_queue_ready_at_start }}"
+    bench_drain_completed: "{{ hostvars[db_host].bench_drain_completed }}"
+    bench_drain_ready_left: "{{ hostvars[db_host].bench_drain_ready_left }}"
+    bench_drain_queue_left: "{{ hostvars[db_host].bench_drain_queue_left }}"
+    bench_drain_in_flight: "{{ hostvars[db_host].bench_drain_in_flight }}"
+    bench_drain_delivered: "{{ hostvars[db_host].bench_drain_delivered }}"
+  roles:
+    - bench_report

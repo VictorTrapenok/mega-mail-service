@@ -1,0 +1,97 @@
+---
+# Измерение ТОЛЬКО скорости приёма.
+#
+# Воркеры доставки остановлены вызывающим плейбуком, поэтому очередь за время
+# прогона лишь растёт. Это и есть смысл измерения: приём и разбор очереди
+# конкурируют за одни ядра и одну БД, и в комбинированном прогоне невозможно
+# сказать, какая из двух половин не дотягивает до цели.
+#
+# Побочная выгода — очередь, набитая штатным путём: она остаётся входом
+# для измерения дренажа.
+
+- name: Прогрев
+  ansible.builtin.command:
+    argv: >-
+      {{ bench_loadgen_argv + bench_loadgen_cpuset_argv
+         + ['-e', 'BENCH_PHASE=warmup',
+            '-e', 'BENCH_DURATION=' ~ bench_warmup_s ~ 's',
+            loadgen_image_ref, 'run', '/scripts/send.js'] }}
+  delegate_to: "{{ groups['load_generators'] | first }}"
+  run_once: true
+  changed_when: true
+
+# Замер идёт ПОСЛЕ прогрева: письма прогрева тоже остались в очереди, потому что
+# воркеры остановлены, и отсчёт от состояния до прогрева завысил бы прирост
+# на всю его длительность.
+- name: Замерить длину очереди перед окном
+  community.mysql.mysql_query:
+    login_host: "{{ postal_main_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_main_db_name }}"
+    query: "SELECT COUNT(*) AS n FROM queued_messages"
+  register: ingress_queue_before
+  changed_when: false
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+
+# Время берётся живыми часами хоста основной БД, а не из ansible_date_time:
+# тот факт снимается один раз при сборе фактов и в течение плея не меняется.
+- name: Отметить начало окна
+  ansible.builtin.command:
+    argv: [date, -u, +%s]
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+  changed_when: false
+  register: ingress_clock_start
+
+- name: Рабочая нагрузка
+  ansible.builtin.command:
+    argv: >-
+      {{ bench_loadgen_argv + bench_loadgen_cpuset_argv
+         + ['-e', 'BENCH_PHASE=steady',
+            '-e', 'BENCH_DURATION=' ~ bench_duration_s ~ 's',
+            loadgen_image_ref, 'run', '/scripts/send.js'] }}
+  delegate_to: "{{ groups['load_generators'] | first }}"
+  run_once: true
+  changed_when: true
+
+- name: Отметить конец окна
+  ansible.builtin.command:
+    argv: [date, -u, +%s]
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+  changed_when: false
+  register: ingress_clock_end
+
+- name: Замерить длину очереди после нагрузки
+  community.mysql.mysql_query:
+    login_host: "{{ postal_main_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_main_db_name }}"
+    query: "SELECT COUNT(*) AS n FROM queued_messages"
+  register: ingress_queue_after
+  changed_when: false
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+
+- name: Зафиксировать итоги приёма
+  ansible.builtin.set_fact:
+    bench_ingress_window_start: "{{ ingress_clock_start.stdout | trim }}"
+    bench_ingress_window_end: "{{ ingress_clock_end.stdout | trim }}"
+    bench_ingress_queue_before: "{{ ingress_queue_before.query_result[0][0].n | int }}"
+    bench_ingress_queue_after: "{{ ingress_queue_after.query_result[0][0].n | int }}"
+  run_once: true
+
+- name: Забрать сводки генератора
+  ansible.builtin.fetch:
+    src: "{{ loadgen_results_dir }}/{{ bench_run_id }}-{{ item }}-summary.json"
+    dest: "{{ bench_reports_dir }}/{{ bench_run_id }}/"
+    flat: false
+    fail_on_missing: false
+  loop: [warmup, steady]
+  delegate_to: "{{ groups['load_generators'] | first }}"
+  run_once: true

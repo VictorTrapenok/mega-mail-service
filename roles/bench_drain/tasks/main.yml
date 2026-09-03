@@ -1,0 +1,134 @@
+---
+# Измерение ТОЛЬКО скорости разбора очереди.
+#
+# Генератор молчит: очередь набита заранее, ингресс не работает, и всё железо
+# достаётся воркерам. Знаменатель скорости известен точно, а не выводится
+# из скорости приёма, как в комбинированном прогоне.
+#
+# Воркеры запускает сама эта роль, а не плейбук: отметка начала должна лежать
+# между их готовностью и первой обработанной строкой, иначе в измеряемое время
+# попадёт запуск Ruby.
+
+- name: Снять счётчик доставок приёмника до дренажа
+  ansible.builtin.shell:
+    cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: drain_sink_before
+
+- name: Запустить воркеры
+  ansible.builtin.include_role:
+    name: bench_workers
+  vars:
+    bench_workers_state: running
+
+- name: Отметить начало дренажа
+  ansible.builtin.command:
+    argv: [date, -u, +%s]
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+  changed_when: false
+  register: drain_clock_start
+
+# Знаменатель — готовые строки, а не все. Отложенные воркер не возьмёт до
+# истечения retry_after, поэтому включать их в скорость разбора значило бы
+# делить работу на время, за которое она и не могла быть выполнена.
+- name: Замерить очередь в момент старта
+  community.mysql.mysql_query:
+    login_host: "{{ postal_main_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_main_db_name }}"
+    query: >-
+      SELECT COUNT(*) AS total,
+             CAST(SUM(retry_after IS NULL
+                 OR retry_after < UTC_TIMESTAMP() - INTERVAL 30 SECOND) AS SIGNED) AS ready
+        FROM queued_messages
+  register: drain_queue_at_start
+  changed_when: false
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+
+# Ждём исчерпания ГОТОВЫХ строк, а не опустошения таблицы: при непустой
+# отложенной доле таблица не опустеет до истечения retry_after, и условие
+# на COUNT(*) не выполнилось бы никогда, превратив результат в таймаут.
+- name: Дождаться исчерпания готовых строк
+  community.mysql.mysql_query:
+    login_host: "{{ postal_main_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_main_db_name }}"
+    query: >-
+      SELECT COUNT(*) AS n FROM queued_messages
+       WHERE locked_at IS NULL
+         AND (retry_after IS NULL
+              OR retry_after < UTC_TIMESTAMP() - INTERVAL 30 SECOND)
+  register: drain_check
+  until: (drain_check.query_result[0][0].n | int) == 0
+  retries: "{{ ((bench_drain_timeout_s | int) / 10) | int }}"
+  delay: 10
+  # Незавершённый дренаж — это РЕЗУЛЬТАТ, а не сбой: он означает, что разбор
+  # очереди медленнее, чем нужно. Прогон не роняем, факт идёт в отчёт.
+  failed_when: false
+  changed_when: false
+  run_once: true
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+
+- name: Отметить конец дренажа
+  ansible.builtin.command:
+    argv: [date, -u, +%s]
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+  changed_when: false
+  register: drain_clock_end
+
+- name: Снять счётчик доставок приёмника после дренажа
+  ansible.builtin.shell:
+    cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: drain_sink_after
+
+- name: Замерить остаток очереди
+  community.mysql.mysql_query:
+    login_host: "{{ postal_main_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_main_db_name }}"
+    query: >-
+      SELECT COUNT(*) AS total,
+             CAST(SUM(locked_at IS NOT NULL) AS SIGNED) AS in_flight
+        FROM queued_messages
+  register: drain_queue_left
+  changed_when: false
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+
+- name: Зафиксировать итоги дренажа
+  ansible.builtin.set_fact:
+    bench_drain_start: "{{ drain_clock_start.stdout | trim }}"
+    bench_drain_end: "{{ drain_clock_end.stdout | trim }}"
+    bench_drain_queue_total_at_start: "{{ drain_queue_at_start.query_result[0][0].total | int }}"
+    bench_drain_queue_ready_at_start: "{{ drain_queue_at_start.query_result[0][0].ready | int }}"
+    bench_drain_completed: "{{ (drain_check.query_result[0][0].n | int) == 0 }}"
+    bench_drain_ready_left: "{{ drain_check.query_result[0][0].n | int }}"
+    bench_drain_queue_left: "{{ drain_queue_left.query_result[0][0].total | int }}"
+    bench_drain_in_flight: "{{ drain_queue_left.query_result[0][0].in_flight | int }}"
+    # Доставку считаем окном дренажа, а не всем логом: иначе в неё попали бы
+    # остатки предыдущих прогонов, и независимая проверка доставки имела бы
+    # встроенное расхождение с выборкой из БД.
+    bench_drain_delivered: >-
+      {{ (drain_sink_after.results | map(attribute='stdout') | map('trim') | map('int') | sum)
+         - (drain_sink_before.results | map(attribute='stdout') | map('trim') | map('int') | sum) }}
+  run_once: true

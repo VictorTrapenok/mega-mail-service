@@ -1,42 +1,6 @@
 ---
 # Идентификатор прогона задаётся плейбуком; здесь только запасное значение.
-bench_run_id: "manual"
-
-# Общая часть команды запуска генератора. Фаза и длительность добавляются
-# на месте вызова, чтобы прогрев и рабочая фаза были разными запусками.
 #
-# Лимиты применяются здесь: без них контейнер генератора конкурирует
-# с системой под тестом без ограничений, что особенно заметно
-# в отладочной раскладке на одной машине.
-bench_loadgen_argv:
-  - docker
-  - run
-  - "--rm"
-  - "--network=host"
-  - "--cpus={{ loadgen_limits.cpus }}"
-  - "--memory={{ loadgen_limits.memory }}"
-  - "-v"
-  - "{{ loadgen_dir }}:/scripts:ro"
-  - "-v"
-  - "{{ loadgen_results_dir }}:/results"
-  - "-e"
-  - "POSTAL_API_URL=http://{{ postal_web_addrs | first }}:{{ postal_web_port }}"
-  - "-e"
-  - "POSTAL_WEB_HOST={{ postal_web_hostname }}"
-  - "-e"
-  - "POSTAL_API_KEY={{ postal_seed.api_key }}"
-  - "-e"
-  - "BENCH_RUN_ID={{ bench_run_id }}"
-  - "-e"
-  - "BENCH_DOMAIN={{ postal_test_domain }}"
-  - "-e"
-  - "BENCH_DOMAIN_COUNT={{ bench_profiles[bench_profile].destination_domains }}"
-  - "-e"
-  - "BENCH_MIME_SIZE={{ bench_profiles[bench_profile].mime_size_bytes }}"
-  - "-e"
-  - "BENCH_RATE={{ bench_target_rate }}"
-
-# Привязка генератора к ядрам — только если она задана в inventory.
-# На одной машине это единственный способ не дать генератору отбирать ядра
-# у системы под тестом.
-bench_loadgen_cpuset_argv: "{{ ['--cpuset-cpus=' ~ loadgen_cpuset] if loadgen_cpuset | default('') else [] }}"
+# Команда запуска генератора живёт в group_vars/all/50-bench.yml: её используют
+# несколько ролей, а default роли виден только пока эта роль выполняется.
+bench_run_id: "manual"

@@ -3,13 +3,32 @@
    "values", поэтому к метрикам k6 обращаемся только индексной записью. #}
 {% set lat = m['postal_accept_latency']['values'] if 'postal_accept_latency' in m else {} %}
 {% set accepted = bench_accepted | int %}
-{% set delivered = bench_delivered | int %}
+{# Раздельные прогоны не заполняют доставку за окно: в прогоне приёма воркеры
+   остановлены, а в прогоне дренажа доставка считается своим счётчиком. #}
+{% set delivered = bench_delivered | default(0) | int %}
 {% set queued = bench_queued_now | int %}
 {% set window = (bench_window_end | int) - (bench_window_start | int) %}
 {% set unaccounted = bench_unaccounted | int %}
+{# Устойчивая пропускная способность считается по ВСЕМУ времени, за которое
+   работа действительно завершилась, включая дренаж. Скорость приёма за окно
+   таковой не является: пока очередь растёт, часть работы лишь отложена,
+   и деление принятого на длину окна выдаёт задел за результат. #}
+{% set span = (bench_drain_end | int) - (bench_window_start | int) if bench_report_kind == 'combined' else 0 %}
+{% set sustained = (delivered / span) if (bench_report_kind == 'combined' and span > 0) else 0 %}
+{% set drain_span = (bench_drain_end | int) - (bench_drain_start | int) if bench_report_kind == 'drain' else 0 %}
+{% set drain_rate = ((bench_drain_delivered | int) / drain_span) if drain_span > 0 else 0 %}
 # Прогон {{ bench_run_id }}
 
-Postal {{ postal_image_ref }}, профиль `{{ bench_profile }}`, класс прогона **{{ bench_run_class }}**.
+Postal {{ postal_image_ref }}, профиль `{{ bench_profile }}`, класс прогона **{{ bench_run_class }}**, вид **{{ bench_report_kind }}**.
+
+{% if bench_report_kind == 'ingress' %}
+> Измерялся **только приём**: воркеры доставки остановлены на всё время прогона,
+> очередь лишь росла. Число ниже — пропускная способность приёма, не системы:
+> оно не говорит, успевает ли доставка за приёмом.
+{% elif bench_report_kind == 'drain' %}
+> Измерялся **только разбор очереди**: она набита заранее, ингресс молчит,
+> и всё железо досталось воркерам. Приём в этом прогоне не измеряется вовсе.
+{% endif %}
 
 {% if bench_run_class == 'debug' %}
 > Класс `debug`: генератор, система под тестом и приёмник делят железо.
@@ -71,51 +90,133 @@ Postal {{ postal_image_ref }}, профиль `{{ bench_profile }}`, класс 
 
 | Метрика | Значение |
 |---|---|
+{% if bench_report_kind == 'ingress' %}
 | Принято (accepted) | **{{ accepted }}** получателей |
 | Отвергнуто при приёме | {{ bench_rejected }} |
-| Средняя скорость приёма | **{{ (accepted / window) | round(1) if window > 0 else 'н/д' }}** получателей/с |
-| Доставлено в приёмник за окно | **{{ delivered }}** |
+| **Скорость приёма** | **{{ (accepted / window) | round(1) if window > 0 else 'н/д' }}** получателей/с |
+| Прирост очереди за окно | {{ (bench_ingress_queue_after | int) - (bench_ingress_queue_before | int) }} |
+| Латентность приёма p50 | {{ (lat['med'] | default(0)) | round(1) }} мс |
+| Латентность приёма p95 | {{ (lat['p(95)'] | default(0)) | round(1) }} мс |
+| Латентность приёма p99 | {{ (lat['p(99)'] | default(0)) | round(1) }} мс |
+| Длина окна | {{ window }} с |
+
+{% set queue_growth = (bench_ingress_queue_after | int) - (bench_ingress_queue_before | int) %}
+{% if queue_growth == accepted %}
+Воркеры остановлены, и прирост очереди в точности совпал с принятым: всё, что
+Postal подтвердил, лежит в очереди, и ничего не потерялось по пути.
+{% else %}
+> **Прирост очереди ({{ queue_growth }}) не совпал с принятым ({{ accepted }}),
+> расхождение {{ queue_growth - accepted }}.** Воркеры остановлены, поэтому
+> принятое обязано целиком лежать в очереди. Прогон недостоверен: письма либо
+> терялись при приёме, либо воркер всё-таки работал.
+{% endif %}
+{% elif bench_report_kind == 'drain' %}
+| Очередь в момент старта | **{{ bench_drain_queue_total_at_start }}** строк |
+| из них готовых к отправке | {{ bench_drain_queue_ready_at_start }} |
+| из них отложенных | {{ (bench_drain_queue_total_at_start | int) - (bench_drain_queue_ready_at_start | int) }} |
+| **Скорость разбора очереди** | **{{ drain_rate | round(1) }}** получателей/с |
+| Доставлено в приёмник | {{ bench_drain_delivered }} |
+| Время дренажа | {{ drain_span }} с |
+| Готовые строки исчерпаны | {{ 'да' if bench_drain_completed else 'НЕТ' }} |
+| Осталось в очереди | {{ bench_drain_queue_left }} (из них в работе {{ bench_drain_in_flight }}) |
+
+Скорость считается по готовым строкам: отложенные воркер не возьмёт до
+истечения `retry_after`, и включать их в делимое значило бы делить работу
+на время, за которое она не могла быть выполнена.
+{% if not bench_drain_completed %}
+> **Готовые строки не исчерпаны за {{ bench_drain_timeout_s }} с**, осталось
+> {{ bench_drain_ready_left }}. Это результат, а не сбой: разбор очереди такой
+> длины медленнее отведённого времени.
+{% endif %}
+{% else %}
+| Принято (accepted) | **{{ accepted }}** получателей |
+| Отвергнуто при приёме | {{ bench_rejected }} |
+| Скорость приёма за окно | {{ (accepted / window) | round(1) if window > 0 else 'н/д' }} получателей/с |
+| **Устойчивая пропускная способность** | **{{ sustained | round(1) }}** получателей/с |
+| Доставлено в приёмник за окно и дренаж | **{{ delivered }}** |
 | Доставлено к концу нагрузки | {{ bench_delivered_at_window_end }} |
-| Латентность приёма p50 | {{ (lat['p(50)'] | default(0)) | round(1) }} мс |
+| Латентность приёма p50 | {{ (lat['med'] | default(0)) | round(1) }} мс |
 | Латентность приёма p95 | {{ (lat['p(95)'] | default(0)) | round(1) }} мс |
 | Латентность приёма p99 | {{ (lat['p(99)'] | default(0)) | round(1) }} мс |
 | Дренаж завершён | {{ 'да' if bench_drained else 'НЕТ' }} |
 | Время дренажа | {{ (bench_drain_end | int) - (bench_window_end | int) }} с |
 | Осталось в очереди | {{ queued }} (из них в работе {{ bench_in_flight }}) |
 
-{% if not bench_drained %}
+**Заголовочное число — устойчивая пропускная способность**, а не скорость
+приёма. Пока очередь растёт, приём принимает быстрее, чем доставка успевает
+отдать, и деление принятого на длину окна выдаёт задел за выполненную работу.
+Устойчивая величина считает доставленное за всё время, включая
+{{ (bench_drain_end | int) - (bench_window_end | int) }} с дренажа, за которые
+очередь разбиралась уже без нагрузки.
+
+Разница между этими двумя числами показывает, насколько приём опережает
+доставку: чем она больше, тем сильнее прогон опирался на очередь.
+{% endif %}
+
+{% if bench_report_kind == 'combined' and not bench_drained %}
 > **Очередь не опустела за {{ bench_drain_timeout_s }} с**, осталось
 > {{ bench_queue_left_after_drain }} сообщений. Это результат, а не сбой:
 > доставка не поспевает за приёмом на данной скорости. Устойчивой такую
 > скорость считать нельзя.
 {% endif %}
-{% if (bench_dropped | int) > 0 %}
+{# В прогоне дренажа расписания нет по устройству: письма набиваются режимом
+   burst настолько быстро, насколько их принимает Postal, и уронённые итерации
+   там означали бы лишь исчерпание отведённого набивке времени. #}
+{% if bench_report_kind != 'drain' and (bench_dropped | int) > 0 %}
 > **Прогон непригоден для выводов о латентности.** Генератор не удержал
-> расписание: `dropped_iterations = {{ bench_dropped }}`. Открытая модель
-> нарушена, и перцентили занижены на неизвестную величину. Нужно либо снизить
-> целевую скорость, либо дать генератору больше ресурсов.
+> расписание: `dropped_iterations = {{ bench_dropped }}` при потолке
+> {{ (bench_target_rate | int) * (bench_max_vu_factor | int) }} виртуальных
+> пользователей. По закону Литтла скорость {{ bench_target_rate }}/с при
+> латентности L требует {{ bench_target_rate }}·L одновременных VU, поэтому
+> сначала проверьте, не потолок ли VU стал ограничителем, и только потом
+> считайте, что упёрлась система под тестом.
 {% endif %}
 
 ## Сверка
 
+{% if bench_report_kind == 'ingress' %}
+{# Остаток очереди по всей таблице здесь не годится: воркеры остановлены,
+   поэтому в ней лежат ещё и письма прогрева, а принятое считается за окно. #}
+```
+accepted = (терминальные состояния) + прирост очереди за окно
+{{ accepted }} = {{ bench_terminal }} + {{ (bench_ingress_queue_after | int) - (bench_ingress_queue_before | int) }}
+```
+{% else %}
 ```
 accepted = (терминальные состояния) + queued
 {{ accepted }} = {{ bench_terminal }} + {{ queued }}
 ```
+{% endif %}
 
 | Корзина | Получателей |
 |---|---|
 {% for status, n in bench_buckets | dictsort %}
 | {{ status }} | {{ n }} |
 {% endfor %}
+{% if bench_report_kind == 'ingress' %}
+| В очереди (прирост за окно) | {{ (bench_ingress_queue_after | int) - (bench_ingress_queue_before | int) }} |
+{% else %}
 | В очереди | {{ queued }} |
+{% endif %}
 | В работе | {{ bench_in_flight }} |
 | **Не учтено** | **{{ unaccounted }}** ({{ ((unaccounted / accepted * 100) | abs) | round(2) if accepted > 0 else 'н/д' }} %) |
 
-Независимая проверка доставки: приёмник записал {{ delivered }} строк
-`status=sent` за окно, Postal считает отправленными
+Корзина `Pending` в тождество не входит: это не состояние доставки, а ровно те
+письма, что лежат в очереди, и складывать её с остатком очереди значило бы
+учитывать их дважды.
+
+{% if bench_report_kind == 'ingress' %}
+Доставка в этом прогоне не проверяется: воркеры остановлены, и всё принятое
+обязано лежать в очереди. Отправленными Postal считает
+{{ bench_buckets.Sent | default(0) }} — ненулевое значение здесь означает,
+что воркер всё-таки работал, и измерение приёма занижено.
+{% else %}
+{% set sink_count = (bench_drain_delivered | int) if bench_report_kind == 'drain' else delivered %}
+Независимая проверка доставки: приёмник записал {{ sink_count }} строк
+`status=sent`, Postal считает отправленными
 {{ bench_buckets.Sent | default(0) }}. Расхождение
-{{ delivered - (bench_buckets.Sent | default(0) | int) }}.
+{{ sink_count - (bench_buckets.Sent | default(0) | int) }}.
+{% endif %}
 
 {% if (bench_buckets.Held | default(0) | int) > 0 %}
 > `Held` больше нуля при нулевой инжекции отказов означает неисправность
@@ -146,9 +247,22 @@ accepted = (терминальные состояния) + queued
   временные отказы. Это верхняя граница, а не прогноз.
 - Ретраи, отложенная доставка и подавление не нагружались: профиль содержит
   100 % успешных ответов.
-- Очередь стартовала пустой. Запрос захвата очереди в Postal не покрыт ни одним
-  индексом (в `queued_messages` их три: `domain`, `message_id`, `server_id`),
-  поэтому его стоимость растёт с длиной очереди и на пустой очереди не видна.
+{% if bench_report_kind == 'drain' %}
+- Очередь набита {{ bench_drain_queue_total_at_start }} строками, и результат
+  относится именно к этой длине. Перенос на другую длину неправомерен: оба
+  горячих запроса воркера не покрыты индексами, поэтому стоимость обработки
+  письма зависит от того, сколько строк лежит в таблице.
+{% else %}
+- Очередь стартовала пустой, а стоимость обработки письма растёт с её длиной.
+  Ни один из двух горячих запросов воркера не покрыт индексом: в
+  `queued_messages` их три — `domain`, `message_id`, `server_id`. Запрос захвата
+  останавливается на первой подходящей строке, поэтому при полностью готовой
+  очереди он дёшев; а вот набор батча (`batchable_messages`, до 100 строк
+  с тем же `batch_key`) прерывается только по набору сотни либо по концу
+  таблицы, и при {{ bench_profiles[bench_profile].destination_domains }} доменах
+  сотня почти никогда не набирается — то есть КАЖДОЕ письмо обходится
+  сканированием всей очереди. Длину очереди меряет `playbooks/drain.yml`.
+{% endif %}
 - Распределение по доменам квадратичное, а не Zipf: доля самого горячего
   домена ниже, чем была бы при настоящем Zipf, а значит батчинг Postal
   задействован слабее.

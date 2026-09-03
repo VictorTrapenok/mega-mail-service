@@ -1,0 +1,143 @@
+---
+# Набивка очереди перед измерением дренажа.
+#
+# Письма создаются штатным путём — через HTTP API при остановленных воркерах,
+# а не вставкой строк в БД. Прямой SQL пришлось бы воспроизводить руками строку
+# в messages, две longblob-строки посуточной raw-таблицы и строку очереди
+# со всеми связями; любая неточность там выглядела бы как результат измерения.
+# Плата за честность — время: набивка идёт со скоростью приёма.
+#
+# Роль НЕидемпотентна по замыслу: каждый вызов добавляет письма к очереди.
+
+# Отметка нужна как нижняя граница окна сверки: письма создаются здесь,
+# а не во время дренажа, поэтому выборка по времени дренажа не нашла бы ни одной
+# строки в messages, и сверка показала бы полную недостачу.
+- name: Отметить начало набивки
+  ansible.builtin.command:
+    argv: [date, -u, +%s]
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+  changed_when: false
+  register: prefill_clock_start
+
+- name: Зафиксировать начало набивки
+  ansible.builtin.set_fact:
+    bench_prefill_start: "{{ prefill_clock_start.stdout | trim }}"
+  run_once: true
+
+- name: Набить очередь письмами
+  ansible.builtin.command:
+    argv: >-
+      {{ bench_loadgen_argv + bench_loadgen_cpuset_argv
+         + ['-e', 'BENCH_PHASE=prefill',
+            '-e', 'BENCH_MODE=burst',
+            '-e', 'BENCH_ITERATIONS=' ~ bench_prefill_recipients,
+            '-e', 'BENCH_BURST_VUS=' ~ bench_prefill_burst_vus,
+            '-e', 'BENCH_DURATION=' ~ bench_prefill_timeout_s ~ 's',
+            loadgen_image_ref, 'run', '/scripts/send.js'] }}
+  delegate_to: "{{ groups['load_generators'] | first }}"
+  run_once: true
+  changed_when: true
+
+- name: Измерить фактическую длину очереди
+  community.mysql.mysql_query:
+    login_host: "{{ postal_main_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_main_db_name }}"
+    query: "SELECT COUNT(*) AS n FROM queued_messages"
+  register: bench_prefill_actual
+  changed_when: false
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+
+# Расхождение больше допуска означает, что часть писем не дошла до очереди:
+# либо приём отказывал, либо воркер всё-таки работал и успел их разобрать.
+# И то и другое делает измерение дренажа бессмысленным, потому что знаменатель
+# скорости неизвестен.
+- name: Проверить, что очередь набита ожидаемо
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((bench_prefill_actual.query_result[0][0].n | int)
+         - (bench_prefill_recipients | int)) | abs
+        <= (bench_prefill_recipients | int) * (bench_reconcile_tolerance | float)
+    fail_msg: >-
+      В очереди {{ bench_prefill_actual.query_result[0][0].n }} строк вместо
+      {{ bench_prefill_recipients }}. Набивка не удалась: проверьте, что воркеры
+      остановлены и что приём не отвергал письма.
+  run_once: true
+
+- name: Найти пороговый идентификатор для отложенной доли
+  community.mysql.mysql_query:
+    login_host: "{{ postal_main_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_main_db_name }}"
+    query: >-
+      SELECT id FROM queued_messages ORDER BY id
+       LIMIT 1 OFFSET {{ ((bench_prefill_actual.query_result[0][0].n | int)
+                          * (bench_prefill_deferred_share | float)) | round | int - 1 }}
+  register: bench_deferred_threshold
+  changed_when: false
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+  when: (bench_prefill_deferred_share | float) > 0
+
+# Откладываются самые старые строки по первичному ключу: запрос захвата идёт
+# по нему без ORDER BY и останавливается на первой подходящей строке, поэтому
+# стоимость захвата определяется тем, сколько НЕподходящих строк лежит в голове
+# таблицы. Отложить случайные строки значило бы размазать их равномерно
+# и не воспроизвести вырождение очереди вовсе.
+- name: Перевести старые строки в отложенные
+  community.mysql.mysql_query:
+    login_host: "{{ postal_main_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_main_db_name }}"
+    query: >-
+      UPDATE queued_messages
+         SET retry_after = UTC_TIMESTAMP() + INTERVAL {{ bench_prefill_deferred_delay_s | int }} SECOND
+       WHERE id <= {{ bench_deferred_threshold.query_result[0][0].id | int }}
+  changed_when: true
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+  when: (bench_prefill_deferred_share | float) > 0
+
+- name: Зафиксировать состав очереди перед дренажем
+  community.mysql.mysql_query:
+    login_host: "{{ postal_main_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_main_db_name }}"
+    query: >-
+      SELECT COUNT(*) AS total,
+             CAST(SUM(retry_after IS NULL
+                 OR retry_after < UTC_TIMESTAMP() - INTERVAL 30 SECOND) AS SIGNED) AS ready,
+             CAST(SUM(retry_after IS NOT NULL
+                 AND retry_after >= UTC_TIMESTAMP() - INTERVAL 30 SECOND) AS SIGNED) AS deferred
+        FROM queued_messages
+  register: bench_prefill_composition
+  changed_when: false
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+
+- name: Раздать состав очереди фактом
+  ansible.builtin.set_fact:
+    bench_queue_total: "{{ bench_prefill_composition.query_result[0][0].total | int }}"
+    bench_queue_ready: "{{ bench_prefill_composition.query_result[0][0].ready | int }}"
+    bench_queue_deferred: "{{ bench_prefill_composition.query_result[0][0].deferred | int }}"
+  run_once: true
+
+- name: Забрать сводку набивки
+  ansible.builtin.fetch:
+    src: "{{ loadgen_results_dir }}/{{ bench_run_id }}-prefill-summary.json"
+    dest: "{{ bench_reports_dir }}/{{ bench_run_id }}/"
+    flat: false
+    fail_on_missing: false
+  delegate_to: "{{ groups['load_generators'] | first }}"
+  run_once: true

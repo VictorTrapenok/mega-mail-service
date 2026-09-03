@@ -37,7 +37,13 @@
   vars:
     postal_seed: "{{ hostvars[groups['postal_admin'] | first].postal_seed }}"
   roles:
+    - role: bench_samplers
+      vars:
+        bench_samplers_state: started
     - bench_run
+    - role: bench_samplers
+      vars:
+        bench_samplers_state: stopped
 
 - name: Собрать отчёт
   hosts: postal_main_db
@@ -45,7 +51,12 @@
   vars:
     db_host: "{{ groups['postal_main_db'] | first }}"
     postal_seed: "{{ hostvars[groups['postal_admin'] | first].postal_seed }}"
-    postal_image_resolved: "{{ hostvars[groups['postal_workers'] | first].postal_image_resolved }}"
+    # Факт живёт только в кэше: его ставит роль postal_image при развёртывании.
+    # Прогон не должен падать из-за пустого кэша — фактически запущенный образ
+    # отчёт всё равно читает с хоста через docker inspect, и это достовернее.
+    postal_image_resolved: >-
+      {{ hostvars[groups['postal_workers'] | first].postal_image_resolved
+         | default('не определён: кэш фактов пуст, см. фактически запущенный образ', true) }}
     bench_window_start: "{{ hostvars[db_host].bench_window_start }}"
     bench_window_end: "{{ hostvars[db_host].bench_window_end }}"
     bench_drain_end: "{{ hostvars[db_host].bench_drain_end }}"

@@ -1,0 +1,94 @@
+---
+# Измерение скорости приёма в отрыве от доставки.
+#
+# Воркеры остановлены на всё время прогона, поэтому очередь только растёт,
+# и полученное число — чистая пропускная способность приёма: сколько писем
+# Postal успевает записать в БД и поставить в очередь, не конкурируя
+# с разбором этой же очереди за те же ядра и ту же БД.
+#
+# Плейбук НЕидемпотентен по замыслу и не входит в критерий повторяемости.
+
+- name: Собрать факты со всех хостов
+  hosts: all
+  gather_facts: true
+  tasks: []
+
+- name: Присвоить идентификатор прогона
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Взять время живыми часами
+      ansible.builtin.command:
+        argv: [date, -u, "+%Y%m%dT%H%M%SZ"]
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+      register: run_clock
+
+    - name: Зафиксировать идентификатор прогона
+      ansible.builtin.set_fact:
+        bench_run_id: >-
+          {{ lookup('env', 'BENCH_RUN_ID') | default('ingress-' ~ (run_clock.stdout | trim), true) }}
+
+- name: Подготовить состояние перед прогоном
+  ansible.builtin.import_playbook: reset.yml
+
+- name: Остановить воркеры доставки
+  hosts: postal_workers
+  become: true
+  tasks:
+    - name: Перевести воркеры в остановленное состояние
+      ansible.builtin.include_role:
+        name: bench_workers
+      vars:
+        bench_workers_state: stopped
+
+- name: Измерить приём
+  hosts: postal_main_db:postal_workers:postal_smtp:postfix_sinks:load_generators
+  become: true
+  vars:
+    postal_seed: "{{ hostvars[groups['postal_admin'] | first].postal_seed }}"
+  roles:
+    - role: bench_samplers
+      vars:
+        bench_samplers_state: started
+    - bench_ingress
+    - role: bench_samplers
+      vars:
+        bench_samplers_state: stopped
+
+# Отчёт собирается ДО возврата воркеров: иначе они начинают разбирать очередь,
+# пока считаются остаток очереди и корзины состояний, и отчёт фиксирует уже
+# не то состояние, которое было в конце измерения.
+- name: Собрать отчёт
+  hosts: postal_main_db
+  become: true
+  vars:
+    db_host: "{{ groups['postal_main_db'] | first }}"
+    bench_report_kind: ingress
+    postal_seed: "{{ hostvars[groups['postal_admin'] | first].postal_seed }}"
+    # Факт живёт только в кэше: его ставит роль postal_image при развёртывании.
+    # Прогон не должен падать из-за пустого кэша — фактически запущенный образ
+    # отчёт всё равно читает с хоста через docker inspect, и это достовернее.
+    postal_image_resolved: >-
+      {{ hostvars[groups['postal_workers'] | first].postal_image_resolved
+         | default('не определён: кэш фактов пуст, см. фактически запущенный образ', true) }}
+    bench_window_start: "{{ hostvars[db_host].bench_ingress_window_start }}"
+    bench_window_end: "{{ hostvars[db_host].bench_ingress_window_end }}"
+    bench_ingress_queue_before: "{{ hostvars[db_host].bench_ingress_queue_before }}"
+    bench_ingress_queue_after: "{{ hostvars[db_host].bench_ingress_queue_after }}"
+  roles:
+    - bench_report
+
+# Стенд возвращается в рабочее состояние последним действием: набранная
+# за прогон очередь разбирается воркерами штатно. Измерение дренажа набивает
+# себе очередь само, поэтому связывать эти два прогона не требуется.
+- name: Вернуть воркеры в работу
+  hosts: postal_workers
+  become: true
+  tasks:
+    - name: Перевести воркеры в рабочее состояние
+      ansible.builtin.include_role:
+        name: bench_workers
+      vars:
+        bench_workers_state: running

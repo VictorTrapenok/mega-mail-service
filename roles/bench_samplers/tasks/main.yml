@@ -1,0 +1,74 @@
+---
+# Запуск и остановка сэмплеров прогона.
+#
+# Вынесены в отдельную роль, потому что их используют три измерения: приём,
+# дренаж и комбинированный прогон. Глубина очереди снимается только на хосте
+# основной БД, потребление ресурсов — на каждом хосте прогона.
+
+- name: Создать каталог прогона
+  ansible.builtin.file:
+    path: "{{ bench_dir }}/{{ bench_run_id }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0777"
+  when: bench_samplers_state == 'started'
+
+- name: Разложить сэмплеры
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ bench_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - queue_sampler.sh
+    - stats_sampler.sh
+  when: bench_samplers_state == 'started'
+
+- name: Запустить сэмплер очереди
+  ansible.builtin.shell:
+    cmd: >-
+      nohup {{ bench_dir }}/queue_sampler.sh
+      {{ bench_dir }}/{{ bench_run_id }}/queue.csv
+      > /dev/null 2>&1 & echo $!
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when:
+    - bench_samplers_state == 'started'
+    - inventory_hostname in groups['postal_main_db']
+
+- name: Запустить сэмплер ресурсов
+  ansible.builtin.shell:
+    cmd: >-
+      nohup {{ bench_dir }}/stats_sampler.sh
+      {{ bench_dir }}/{{ bench_run_id }}/stats-{{ inventory_hostname }}.csv
+      > /dev/null 2>&1 & echo $!
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when: bench_samplers_state == 'started'
+
+- name: Остановить сэмплеры
+  ansible.builtin.shell:
+    cmd: "pkill -f '{{ bench_dir }}/(queue|stats)_sampler.sh' || true"
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when: bench_samplers_state == 'stopped'
+
+# Забираем здесь, а не в измеряющих ролях: сэмплеры дописывают CSV до самой
+# остановки, и копия, снятая раньше, обрывалась бы на середине прогона.
+# Без переноса на управляющую машину артефакт прогона не самодостаточен,
+# а именно самодостаточность делает результат публикуемым.
+- name: Забрать CSV сэмплеров на управляющую машину
+  ansible.builtin.fetch:
+    src: "{{ item }}"
+    dest: "{{ bench_reports_dir }}/{{ bench_run_id }}/"
+    flat: false
+    fail_on_missing: false
+  loop:
+    - "{{ bench_dir }}/{{ bench_run_id }}/queue.csv"
+    - "{{ bench_dir }}/{{ bench_run_id }}/stats-{{ inventory_hostname }}.csv"
+  when: bench_samplers_state == 'stopped'

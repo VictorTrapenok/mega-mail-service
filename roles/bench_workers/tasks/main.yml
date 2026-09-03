@@ -1,0 +1,89 @@
+---
+# Перевод воркеров доставки в заданное состояние.
+#
+# Нужна, чтобы измерять приём и разбор очереди по отдельности. При работающих
+# воркерах эти два процесса конкурируют за одни и те же ядра и одну и ту же
+# БД, и одно число на выходе не позволяет сказать, какая из двух половин
+# не дотягивает до цели.
+#
+# Роль НЕидемпотентна по смыслу: она меняет состояние стенда по требованию
+# плейбука, а не приводит его к описанному в inventory виду.
+
+- name: Перечислить сервисы воркеров
+  ansible.builtin.set_fact:
+    bench_worker_services: >-
+      {{ range(1, (postal_worker_replicas | int) + 1) | map('regex_replace', '^', 'worker') | list }}
+
+# Роль подключается и из широких плеев измерения, где кроме воркеров есть
+# генератор и приёмник. На них compose-файла Postal нет вовсе, поэтому
+# принадлежность группе проверяется в самой роли, а не только в плейбуке.
+- name: Остановить воркеры
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'compose', '-f', postal_dir ~ '/docker-compose.yml', 'stop']
+         + bench_worker_services }}
+  changed_when: true
+  when:
+    - bench_workers_state == 'stopped'
+    - inventory_hostname in groups['postal_workers']
+
+- name: Убедиться, что ни один воркер не работает
+  ansible.builtin.command:
+    argv: [docker, compose, -f, "{{ postal_dir }}/docker-compose.yml", ps, --status, running, --services]
+  changed_when: false
+  register: bench_running_services
+  # Иначе измерение приёма молча получило бы работающего конкурента, а вывод
+  # о скорости приёма оказался бы завышенным на неизвестную величину.
+  failed_when: >-
+    bench_running_services.stdout_lines | select('in', bench_worker_services) | list | length > 0
+  when:
+    - bench_workers_state == 'stopped'
+    - inventory_hostname in groups['postal_workers']
+
+# Остановка оставляет захваченные строки залоченными: bin/postal запускает Ruby
+# без exec, поэтому PID 1 внутри контейнера — это bash, и обработчики сигналов
+# на docker stop не срабатывают. Такие строки не подберёт и уборочная задача:
+# она реагирует только на лок старше queued_message_lock_stale_days, то есть
+# через 30 суток. Без разлочки они выпадают из очереди навсегда, дренаж
+# не доходит до нуля, а сверка показывает недостачу без объяснения.
+- name: Снять осиротевшие локи очереди
+  community.mysql.mysql_query:
+    login_host: "{{ postal_main_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_main_db_name }}"
+    query: >-
+      UPDATE queued_messages SET locked_by = NULL, locked_at = NULL
+       WHERE locked_at IS NOT NULL
+  register: bench_unlocked
+  changed_when: (bench_unlocked.rowcount | default([0]) | first | int) > 0
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+  when: bench_workers_state == 'stopped'
+
+- name: Запустить воркеры
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'compose', '-f', postal_dir ~ '/docker-compose.yml', 'start']
+         + bench_worker_services }}
+  changed_when: true
+  when:
+    - bench_workers_state == 'running'
+    - inventory_hostname in groups['postal_workers']
+
+# Момент, с которого воркер действительно берёт задания, определяет знаменатель
+# скорости дренажа. Без ожидания готовности в измеряемое время попал бы ещё
+# и запуск Ruby, а это единицы секунд на прогон длиной в минуты.
+- name: Дождаться готовности воркеров
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ (postal_worker_health_port_base | int) + item }}/health"
+    status_code: [200]
+  register: bench_worker_health
+  until: bench_worker_health is succeeded
+  retries: 30
+  delay: 2
+  loop: "{{ range(0, postal_worker_replicas | int) | list }}"
+  when:
+    - bench_workers_state == 'running'
+    - inventory_hostname in groups['postal_workers']

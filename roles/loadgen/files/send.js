@@ -29,8 +29,25 @@ const MIME_SIZE = parseInt(__ENV.BENCH_MIME_SIZE, 10);
 const RATE = parseInt(__ENV.BENCH_RATE, 10);
 const DURATION = __ENV.BENCH_DURATION;
 
-// Тело письма собирается один раз: цель — нагрузить Postal, а не генератор.
-const BODY = 'x'.repeat(Math.max(0, MIME_SIZE - 512));
+// Режим работы генератора.
+//
+//   rate  — открытая модель с заданной скоростью. Единственный режим, годный
+//           для выводов о латентности и о скорости приёма.
+//   burst — набивка очереди: заданное число писем настолько быстро, насколько
+//           их принимает Postal. Расписания нет, поэтому латентность в этом
+//           режиме измеряет только сам себя и в выводы не идёт. Нужен, чтобы
+//           подготовить очередь заданной длины перед измерением дренажа.
+const MODE = __ENV.BENCH_MODE || 'rate';
+const ITERATIONS = parseInt(__ENV.BENCH_ITERATIONS || '0', 10);
+const BURST_VUS = parseInt(__ENV.BENCH_BURST_VUS || '32', 10);
+
+// Запас VU относительно заданной скорости. По закону Литтла для скорости R
+// при латентности L одновременно требуется R*L виртуальных пользователей,
+// поэтому потолок VU напрямую ограничивает достижимую скорость: при факторе 10
+// прогон физически не мог подавать 58 писем/с, как только латентность приёма
+// превысила 10 с, и генератор начинал ронять итерации. Фактор должен быть
+// заведомо больше отношения худшей ожидаемой латентности к секунде.
+const MAX_VU_FACTOR = parseInt(__ENV.BENCH_MAX_VU_FACTOR || '30', 10);
 
 export const accepted = new Counter('postal_accepted_recipients');
 export const rejected = new Counter('postal_rejected_recipients');
@@ -38,17 +55,125 @@ export const acceptLatency = new Trend('postal_accept_latency', true);
 
 export const options = {
   discardResponseBodies: false,
+  // Дефолтная сводка k6 не содержит p99, а медиану отдаёт под ключом med,
+  // а не p(50). Отчёт без этого печатал нули там, где ожидались перцентили.
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'],
   scenarios: {
-    load: {
-      executor: 'constant-arrival-rate',
-      rate: RATE,
-      timeUnit: '1s',
-      duration: DURATION,
-      preAllocatedVUs: Math.max(20, RATE),
-      maxVUs: Math.max(100, RATE * 10),
-      tags: { phase: PHASE },
-    },
+    load:
+      MODE === 'burst'
+        ? {
+            executor: 'shared-iterations',
+            vus: BURST_VUS,
+            iterations: ITERATIONS,
+            maxDuration: DURATION,
+            tags: { phase: PHASE },
+          }
+        : {
+            executor: 'constant-arrival-rate',
+            rate: RATE,
+            timeUnit: '1s',
+            duration: DURATION,
+            preAllocatedVUs: Math.max(20, RATE),
+            maxVUs: Math.max(100, RATE * MAX_VU_FACTOR),
+            tags: { phase: PHASE },
+          },
   },
+};
+
+// Словарь для сборки тела. Тело из одного повторяющегося байта сжимается почти
+// в ничто, и любая компрессия — таблиц, страниц InnoDB или транспорта — делает
+// запись MIME бесплатной, а вместе с ней недостоверным весь профиль записи.
+// Реальный текст сжимается втрое-вчетверо, и это тот порядок, который должен
+// видеть Postal. Неascii-слова здесь не для красоты: они заставляют Mail gem
+// выбрать quoted-printable, как в настоящей рассылке, а не оставить 7bit.
+// Словарь преимущественно из ASCII, с небольшой долей неascii. Пропорция
+// подобрана не на глаз: quoted-printable кодирует каждый неascii БАЙТ тремя
+// символами, поэтому тело целиком из кириллицы раздулось бы в MIME примерно
+// втрое, и заявленные 100 КБ профиля превратились бы в 300 КБ в базе.
+// Немного неascii при этом нужно, иначе Mail gem оставит 7bit и путь
+// кодирования не нагрузится вовсе.
+const WORDS = [
+  'offer', 'discount', 'update', 'newsletter', 'product', 'limited',
+  'exclusive', 'subscribe', 'details', 'available', 'shipping', 'today',
+  'catalog', 'delivery', 'bonus', 'season', 'collection', 'free', 'order',
+  'customer', 'promo', 'sale', 'gift', 'preview', 'summary', 'reference',
+  'скидка', 'новинка', 'подарок',
+];
+
+// Длина строки в байтах UTF-8. Бюджет письма задан в байтах, а length даёт
+// символы: на кириллице эти величины расходятся вдвое, и профиль «100 КБ»
+// молча превращался бы в 144 КБ по проводу.
+function byteLength(s) {
+  let n = 0;
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s.charCodeAt(i);
+    if (c > 0x7ff) n += 3;
+    else if (c > 0x7f) n += 2;
+    else n += 1;
+  }
+  return n;
+}
+
+// Детерминированный генератор: тела должны различаться между письмами,
+// но не зависеть от запуска, иначе два прогона одной сборки сравнивали бы
+// разные данные.
+//
+// Собирается только короткий фрагмент, а нужный размер набирается его
+// повторением. Это не косметика: код в области модуля выполняется заново
+// для КАЖДОГО виртуального пользователя, и посимвольная сборка сотен килобайт
+// на сотню VU съедала оба ядра генератора целиком — прогон мерил k6, а не Postal.
+// Фрагмент мелкий, потому что размер тела набирается целым числом его повторов:
+// чем он меньше, тем точнее попадание в заданный бюджет. Обрезать повтор
+// на середине нельзя — разрез пришёлся бы на середину многобайтового символа.
+const FRAGMENT_CHARS = 512;
+
+function makeFragment(seed) {
+  let out = '';
+  let s = seed || 1;
+  while (out.length < FRAGMENT_CHARS) {
+    s = (s * 1103515245 + 12345) % 2147483648;
+    out += WORDS[s % WORDS.length];
+    out += s % 11 === 0 ? '.\n' : ' ';
+  }
+  return out;
+}
+
+function makeText(bytes, seed) {
+  if (bytes <= 0) return '';
+  const frag = makeFragment(seed);
+  const repeats = Math.max(1, Math.floor(bytes / byteLength(frag)));
+  return frag.repeat(repeats);
+}
+
+function makeHtml(bytes, seed) {
+  // Ссылки обязательны по существу: при включённом tracking Postal переписывает
+  // каждую из них и пишет строку в таблицу links, поэтому письмо без ссылок
+  // не нагружает этот путь вообще.
+  const head =
+    '<html><body><h1>' +
+    WORDS[seed % WORDS.length] +
+    '</h1><p><a href="https://example.test/c/' +
+    seed +
+    '">подробнее</a></p><p>';
+  const tail = '</p></body></html>';
+  const fill = Math.max(0, bytes - byteLength(head) - byteLength(tail));
+  return head + makeText(fill, seed + 7) + tail;
+}
+
+// Тело одно на все письма, и это не упрощение, а моделирование: настоящая
+// промо-рассылка отправляет один и тот же макет всем адресатам, а различаются
+// получатель и персонализация в заголовках. MIME при этом всё равно уникален
+// у каждого письма — свои To, Subject, Message-ID и подпись DKIM.
+//
+// Держать пул разных тел здесь нельзя ещё и по устройству k6: область модуля
+// исполняется для КАЖДОГО виртуального пользователя, поэтому пул копировался
+// бы столько раз, сколько VU создано, и при высокой латентности приёма
+// (а значит и большом числе VU) генератор получал бы OOM вместо результата.
+const PLAIN_SHARE = 0.35;
+const BUDGET = Math.max(0, MIME_SIZE - 512);
+const BODY = {
+  plain: makeText(Math.floor(BUDGET * PLAIN_SHARE), 1),
+  html: makeHtml(Math.ceil(BUDGET * (1 - PLAIN_SHARE)), 2),
 };
 
 // Перекос по доменам назначения приближает распределение к реальной рассылке:
@@ -76,7 +201,8 @@ export default function () {
     to: [to],
     from: `bench@${DOMAIN}`,
     subject: `bench ${RUN_ID} ${PHASE} ${seq}`,
-    plain_body: BODY,
+    plain_body: BODY.plain,
+    html_body: BODY.html,
     headers: { 'X-Bench-Run': RUN_ID, 'X-Bench-Phase': PHASE, 'X-Bench-Seq': String(seq) },
   });
 
@@ -116,7 +242,7 @@ export function handleSummary(data) {
   return {
     [`/results/${RUN_ID}-${PHASE}-summary.json`]: JSON.stringify(data, null, 2),
     stdout:
-      `phase=${PHASE} accepted=${c('postal_accepted_recipients')} ` +
+      `phase=${PHASE} mode=${MODE} accepted=${c('postal_accepted_recipients')} ` +
       `rejected=${c('postal_rejected_recipients')} ` +
       `dropped=${c('dropped_iterations')}\n`,
   };
