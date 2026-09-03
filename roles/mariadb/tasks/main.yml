@@ -37,6 +37,13 @@
 - name: Применить отложенный перезапуск MariaDB
   ansible.builtin.meta: flush_handlers
 
+- name: Дождаться MariaDB после возможного рестарта
+  ansible.builtin.wait_for:
+    host: "{{ svc_ip }}"
+    port: "{{ mariadb_port }}"
+    state: started
+    timeout: 120
+
 # Postal подключается к message DB тем же пользователем и создаёт базы
 # на лету (Server after_create -> provisioner.provision), поэтому ему нужны
 # права на весь префикс, а не только на основную базу.
@@ -50,6 +57,10 @@
       GRANT ALL PRIVILEGES ON `{{ postal_message_db_prefix }}%`.*
       TO '{{ mariadb_postal_user }}'@'%'
   changed_when: true
+  register: mariadb_message_db_grant
+  until: mariadb_message_db_grant is succeeded
+  retries: 12
+  delay: 5
 
 - name: Вычитать зафиксированные переменные MariaDB обратно
   community.mysql.mysql_query:

@@ -32,7 +32,7 @@ Postal {{ postal_image_ref }}, профиль `{{ bench_profile }}`, класс 
 | Лимиты воркера | {{ postal_limits.worker.cpus }} CPU / {{ postal_limits.worker.memory }} |
 | Лимиты SMTP | {{ postal_limits.smtp.cpus }} CPU / {{ postal_limits.smtp.memory }} |
 | Лимиты MariaDB | {{ mariadb_limits.cpus }} CPU / {{ mariadb_limits.memory }} |
-| Верификация домена | {{ 'принудительная (достоверность снижена)' if postal_force_domain_verification else 'через DNS стенда' }} |
+| Верификация домена | {{ 'принудительная (достоверность снижена)' if (postal_force_domain_verification | default(false)) else 'через DNS стенда' }} |
 
 ### Фактические переменные MariaDB
 

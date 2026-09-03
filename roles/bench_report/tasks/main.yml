@@ -137,6 +137,7 @@
     state: directory
     mode: "0755"
   delegate_to: localhost
+  become: false
   run_once: true
 
 - name: Собрать отчёт
@@ -145,6 +146,7 @@
     dest: "{{ bench_reports_dir }}/{{ bench_run_id }}.md"
     mode: "0644"
   delegate_to: localhost
+  become: false
   run_once: true
 
 # Прогон, в котором сверка не сошлась, не является результатом: расхождение

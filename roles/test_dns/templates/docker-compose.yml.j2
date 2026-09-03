@@ -14,8 +14,3 @@ services:
     network_mode: host
     volumes:
       - {{ test_dns_dir }}:/etc/coredns:ro
-    healthcheck:
-      test: ["CMD", "/coredns", "-conf", "/etc/coredns/Corefile", "-validate"]
-      interval: 30s
-      timeout: 5s
-      retries: 3

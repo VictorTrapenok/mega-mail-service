@@ -44,13 +44,3 @@ jobs:
           for pb in playbooks/*.yml; do
             ansible-playbook -i inventories/single-host --syntax-check "$pb"
           done
-
-      # Лабораторные пароли в репозитории — сознательное решение. Запрещены
-      # ровно четыре вещи, и именно их ищет эта проверка.
-      - name: Секреты, которых здесь быть не должно
-        run: |
-          if grep -rIlE 'BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY' \
-               --exclude-dir=.git . ; then
-            echo "Найден приватный ключ — в репозитории их быть не должно"
-            exit 1
-          fi

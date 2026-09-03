@@ -81,11 +81,9 @@
       - "-M"
   register: sink_master
   changed_when: false
-  # postconf -M печатает поля через пробелы: «smtp  unix  n ...».
-  # Проверка по «имя/тип» не сработала бы никогда и молча пропускала бы
-  # службу доставки наружу — то есть охрана, которая не может сработать.
+  # smtp/inet/smtpd — входящий сервер приёмника. Наружу умеют доставлять
+  # unix-транспорты smtp, relay, lmtp, local и virtual.
   failed_when: >-
     sink_master.stdout_lines
-    | map('regex_replace', '^(\\S+)\\s.*$', '\\1')
-    | select('in', ['smtp', 'relay', 'lmtp', 'local', 'virtual'])
+    | select('match', '^(smtp|relay|lmtp|local|virtual)\\s+unix\\b')
     | list | length > 0

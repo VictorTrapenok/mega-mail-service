@@ -55,6 +55,18 @@
   changed_when: false
   failed_when: (schema_check.query_result[0][0].n | int) == 0
 
+- name: Проверить HTTP web после инициализации схемы
+  ansible.builtin.uri:
+    url: "http://{{ postal_web_addrs | first }}:{{ postal_web_port }}/login"
+    headers:
+      Host: "{{ postal_web_hostname }}"
+    status_code: 200
+  register: postal_web_login
+  until: postal_web_login is succeeded
+  retries: 10
+  delay: 3
+  changed_when: false
+
 - name: Зафиксировать версию схемы для отчёта
   ansible.builtin.set_fact:
     stand_schema_migrations: "{{ schema_check.query_result[0][0].n }}"

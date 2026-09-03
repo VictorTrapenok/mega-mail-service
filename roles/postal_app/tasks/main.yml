@@ -21,7 +21,7 @@
     group: root
     mode: "0644"
     content: |
-      # {{ ansible_managed }}
+      # Ansible managed
       nameserver {{ test_dns_addr }}
       options timeout:{{ postal_dns.timeout }} attempts:2
 

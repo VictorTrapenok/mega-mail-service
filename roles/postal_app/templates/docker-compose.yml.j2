@@ -79,17 +79,10 @@ services:
       WEB_SERVER_DEFAULT_PORT: "{{ postal_web_port }}"
       WEB_SERVER_MAX_THREADS: "{{ postal_web_max_threads }}"
     healthcheck:
-      # Проверяем реальную страницу, а не TCP-соединение: образ с тегом ci-*
-      # собран без precompile ассетов и отдаёт 500, оставаясь при этом
-      # «живым» для проверки на подключение.
-      #
-      # Заголовок Host обязателен. config/application.rb делает
-      # `config.hosts << Postal::Config.postal.web_hostname`, и непустой
-      # config.hosts включает host authorization Rails: любой запрос
-      # с чужим Host (в том числе по IP-адресу) получает 403.
-      #
-      # curl и wget в образе отсутствуют, поэтому проверяем средствами Ruby.
-      test: ["CMD", "ruby", "-e", "require 'net/http'; u = URI('http://127.0.0.1:{{ postal_web_port }}/login'); r = Net::HTTP.start(u.host, u.port) { |h| h.get(u.path, 'Host' => '{{ postal_web_hostname }}') }; exit(r.code == '200' ? 0 : 1)"]
+      # До postal initialize таблиц ещё нет, поэтому /login закономерно
+      # отдаёт 500. Здесь проверяем только, что Puma слушает порт; HTTP-путь
+      # проверяется после инициализации схемы.
+      test: ["CMD", "ruby", "-e", "require 'socket'; TCPSocket.new('127.0.0.1', {{ postal_web_port }}).close"]
       interval: 15s
       timeout: 5s
       retries: 5
