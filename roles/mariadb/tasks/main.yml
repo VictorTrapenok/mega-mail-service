@@ -1,5 +1,5 @@
 ---
-- name: Создать каталоги MariaDB
+- name: Create the MariaDB directories
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
@@ -10,44 +10,44 @@
     - "{{ mariadb_dir }}"
     - "{{ mariadb_dir }}/conf.d"
 
-- name: Развернуть my.cnf
+- name: Deploy my.cnf
   ansible.builtin.template:
     src: my.cnf.j2
     dest: "{{ mariadb_dir }}/conf.d/99-bench.cnf"
     owner: root
     group: root
     mode: "0644"
-  notify: Перезапустить MariaDB
+  notify: Restart MariaDB
 
-- name: Развернуть compose-файл MariaDB
+- name: Deploy the MariaDB compose file
   ansible.builtin.template:
     src: docker-compose.yml.j2
     dest: "{{ mariadb_dir }}/docker-compose.yml"
     owner: root
     group: root
     mode: "0644"
-  notify: Перезапустить MariaDB
+  notify: Restart MariaDB
 
-- name: Запустить MariaDB
+- name: Start MariaDB
   community.docker.docker_compose_v2:
     project_src: "{{ mariadb_dir }}"
     state: present
     wait: true
 
-- name: Применить отложенный перезапуск MariaDB
+- name: Apply the deferred MariaDB restart
   ansible.builtin.meta: flush_handlers
 
-- name: Дождаться MariaDB после возможного рестарта
+- name: Wait for MariaDB after a possible restart
   ansible.builtin.wait_for:
     host: "{{ svc_ip }}"
     port: "{{ mariadb_port }}"
     state: started
     timeout: 120
 
-# Postal подключается к message DB тем же пользователем и создаёт базы
-# на лету (Server after_create -> provisioner.provision), поэтому ему нужны
-# права на весь префикс, а не только на основную базу.
-- name: Выдать права на базы message DB
+# Postal connects to the message DB as the same user and creates the databases
+# on the fly (Server after_create -> provisioner.provision), so it needs
+# privileges on the whole prefix, not only on the main database.
+- name: Grant privileges on the message DB databases
   community.mysql.mysql_query:
     login_host: "{{ svc_ip }}"
     login_port: "{{ mariadb_port }}"
@@ -62,7 +62,7 @@
   retries: 12
   delay: 5
 
-- name: Вычитать зафиксированные переменные MariaDB обратно
+- name: Read the pinned MariaDB variables back
   community.mysql.mysql_query:
     login_host: "{{ svc_ip }}"
     login_port: "{{ mariadb_port }}"
@@ -76,9 +76,9 @@
   register: mariadb_effective
   changed_when: false
 
-# Значение, которое MariaDB не приняла, тихо остаётся дефолтным, и весь прогон
-# измеряет не то, что записано в отчёте. Поэтому сверяем, а не надеемся.
-- name: Сохранить фактические значения для отчёта
+# A value MariaDB did not accept silently stays at its default, and the whole run
+# measures something other than what is written in the report. Hence we verify rather than hope.
+- name: Store the effective values for the report
   ansible.builtin.set_fact:
     stand_mariadb_effective: >-
       {{ dict(mariadb_effective.query_result[0] | map(attribute='name')

@@ -1,15 +1,15 @@
 ---
-# Измерение ТОЛЬКО скорости разбора очереди.
+# Measuring ONLY the queue drain rate.
 #
-# Генератор молчит: очередь набита заранее, ингресс не работает, и всё железо
-# достаётся воркерам. Знаменатель скорости известен точно, а не выводится
-# из скорости приёма, как в комбинированном прогоне.
+# The generator is silent: the queue was filled in advance, ingress is not running, and all
+# the hardware goes to the workers. The denominator of the rate is known exactly rather than
+# being derived from the ingress rate, as in the combined run.
 #
-# Воркеры запускает сама эта роль, а не плейбук: отметка начала должна лежать
-# между их готовностью и первой обработанной строкой, иначе в измеряемое время
-# попадёт запуск Ruby.
+# The workers are started by this role itself rather than by the playbook: the start timestamp
+# must sit between their readiness and the first processed row, otherwise the Ruby startup
+# ends up inside the measured time.
 
-- name: Снять счётчик доставок приёмника до дренажа
+- name: Read the sink delivery counter before the drain
   ansible.builtin.shell:
     cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
   args:
@@ -20,13 +20,25 @@
   changed_when: false
   register: drain_sink_before
 
-- name: Запустить воркеры
+# The sink log is not truncated between runs, so a per-address breakdown taken over the
+# whole file would carry every previous run with it. We remember the length instead and
+# read only the lines the drain itself appended.
+- name: Remember the sink log length before the drain
+  ansible.builtin.command:
+    argv: [bash, -c, "wc -l < {{ postfix_sink_log }}"]
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: drain_sink_lines_before
+
+- name: Start the workers
   ansible.builtin.include_role:
     name: bench_workers
   vars:
     bench_workers_state: running
 
-- name: Отметить начало дренажа
+- name: Record the start of the drain
   ansible.builtin.command:
     argv: [date, -u, +%s]
   delegate_to: "{{ groups['postal_main_db'] | first }}"
@@ -34,10 +46,10 @@
   changed_when: false
   register: drain_clock_start
 
-# Знаменатель — готовые строки, а не все. Отложенные воркер не возьмёт до
-# истечения retry_after, поэтому включать их в скорость разбора значило бы
-# делить работу на время, за которое она и не могла быть выполнена.
-- name: Замерить очередь в момент старта
+# The denominator is the ready rows, not all of them. The worker will not take deferred ones
+# until retry_after expires, so including them in the drain rate would mean
+# dividing work by a time during which it could not have been done.
+- name: Measure the queue at the moment of the start
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -54,10 +66,10 @@
   delegate_to: "{{ groups['postal_main_db'] | first }}"
   run_once: true
 
-# Ждём исчерпания ГОТОВЫХ строк, а не опустошения таблицы: при непустой
-# отложенной доле таблица не опустеет до истечения retry_after, и условие
-# на COUNT(*) не выполнилось бы никогда, превратив результат в таймаут.
-- name: Дождаться исчерпания готовых строк
+# We wait for the READY rows to run out rather than for the table to empty: with a non-empty
+# deferred share the table will not empty until retry_after expires, and a condition
+# on COUNT(*) would never be satisfied, turning the result into a timeout.
+- name: Wait for the ready rows to run out
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -73,14 +85,14 @@
   until: (drain_check.query_result[0][0].n | int) == 0
   retries: "{{ ((bench_drain_timeout_s | int) / 10) | int }}"
   delay: 10
-  # Незавершённый дренаж — это РЕЗУЛЬТАТ, а не сбой: он означает, что разбор
-  # очереди медленнее, чем нужно. Прогон не роняем, факт идёт в отчёт.
+  # An unfinished drain is a RESULT, not a failure: it means that draining
+  # the queue is slower than required. We do not fail the run; the fact goes into the report.
   failed_when: false
   changed_when: false
   run_once: true
   delegate_to: "{{ groups['postal_main_db'] | first }}"
 
-- name: Отметить конец дренажа
+- name: Record the end of the drain
   ansible.builtin.command:
     argv: [date, -u, +%s]
   delegate_to: "{{ groups['postal_main_db'] | first }}"
@@ -88,7 +100,7 @@
   changed_when: false
   register: drain_clock_end
 
-- name: Снять счётчик доставок приёмника после дренажа
+- name: Read the sink delivery counter after the drain
   ansible.builtin.shell:
     cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
   args:
@@ -99,7 +111,28 @@
   changed_when: false
   register: drain_sink_after
 
-- name: Замерить остаток очереди
+# Proof that the pool actually spreads: which source addresses the sink saw, and how often.
+# A skew, or a single address, means the pool is configured but not in use — the messages
+# were assigned an ip_address_id the worker never matched, or none at all.
+- name: Count the sink connections per source address
+  ansible.builtin.shell:
+    cmd: >-
+      tail -n +{{ (drain_sink_lines_before.results
+                   | selectattr('item', 'equalto', item) | first).stdout | trim | int + 1 }}
+      {{ postfix_sink_log }}
+      | grep -oE 'client=[^ ]*\[[0-9.]+\]'
+      | sed 's/.*\[//; s/\]//'
+      | sort | uniq -c
+      | awk '{print $2"="$1}' | paste -sd, -
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: drain_sink_sources
+
+- name: Measure the queue remainder
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -115,7 +148,7 @@
   delegate_to: "{{ groups['postal_main_db'] | first }}"
   run_once: true
 
-- name: Зафиксировать итоги дренажа
+- name: Pin the drain results
   ansible.builtin.set_fact:
     bench_drain_start: "{{ drain_clock_start.stdout | trim }}"
     bench_drain_end: "{{ drain_clock_end.stdout | trim }}"
@@ -125,10 +158,13 @@
     bench_drain_ready_left: "{{ drain_check.query_result[0][0].n | int }}"
     bench_drain_queue_left: "{{ drain_queue_left.query_result[0][0].total | int }}"
     bench_drain_in_flight: "{{ drain_queue_left.query_result[0][0].in_flight | int }}"
-    # Доставку считаем окном дренажа, а не всем логом: иначе в неё попали бы
-    # остатки предыдущих прогонов, и независимая проверка доставки имела бы
-    # встроенное расхождение с выборкой из БД.
+    # Delivery is counted over the drain window rather than over the whole log: otherwise it
+    # would include leftovers from previous runs, and the independent delivery check would
+    # carry a built-in discrepancy against the selection from the DB.
     bench_drain_delivered: >-
       {{ (drain_sink_after.results | map(attribute='stdout') | map('trim') | map('int') | sum)
          - (drain_sink_before.results | map(attribute='stdout') | map('trim') | map('int') | sum) }}
+    bench_drain_sources: >-
+      {{ drain_sink_sources.results | map(attribute='stdout') | map('trim')
+         | select('!=', '') | join(',') }}
   run_once: true

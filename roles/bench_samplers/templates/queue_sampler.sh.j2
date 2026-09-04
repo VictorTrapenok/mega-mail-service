@@ -1,16 +1,16 @@
 #!/bin/bash
 # {{ ansible_managed }}
 #
-# Сэмплер очереди. Пишет CSV раз в {{ bench_sample_interval_s }} с.
+# Queue sampler. Writes CSV every {{ bench_sample_interval_s }} s.
 #
-# Скобки в условии расставлены явно. В штатном script/queue_size.rb самого
-# Postal приоритет AND/OR перепутан, из-за чего в «готовые» попадают в том
-# числе залоченные строки, и глубина очереди систематически завышается.
+# The parentheses in the condition are placed explicitly. In Postal's own stock
+# script/queue_size.rb the AND/OR precedence is mixed up, which makes locked rows
+# count as "ready" as well, and the queue depth is systematically overstated.
 #
-# Порог готовности — не «сейчас», а «30 секунд назад»: воркер отбирает строки
-# скоупом ready_with_delayed_retry, то есть retry_after < 30.seconds.ago.
-# Считать готовым то, что воркер ещё не возьмёт, значит показывать в отчёте
-# запас работы, которого у него нет.
+# The readiness threshold is not "now" but "30 seconds ago": the worker selects rows
+# with the ready_with_delayed_retry scope, i.e. retry_after < 30.seconds.ago.
+# Counting as ready something the worker will not take yet means showing in the report
+# a backlog of work it does not have.
 
 set -u
 OUT="$1"

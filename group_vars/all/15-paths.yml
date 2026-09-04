@@ -1,11 +1,11 @@
 ---
-# Пути, порты и имена, которые используются НЕСКОЛЬКИМИ ролями и плейбуками.
+# Paths, ports and names used by SEVERAL roles and playbooks.
 #
-# Они лежат здесь, а не в defaults ролей, по конкретной причине: default роли
-# находится в области видимости только пока эта роль выполняется. Плейбуки
-# reset, benchmark, calibrate и smoke обращаются к путям Postal, приёмника
-# и генератора, не подключая соответствующие роли, — из defaults эти значения
-# там были бы просто не определены.
+# They live here rather than in role defaults for a specific reason: a role default
+# is only in scope while that role is executing. The reset, benchmark, calibrate and
+# smoke playbooks reference the paths of Postal, the sink and the load generator
+# without including the corresponding roles — coming from defaults, those values
+# would simply be undefined there.
 
 # --- Postal ---------------------------------------------------------------
 postal_dir: /opt/postal-bench/postal
@@ -14,31 +14,31 @@ postal_config_dir: /opt/postal-bench/postal/config
 # --- MariaDB --------------------------------------------------------------
 mariadb_dir: /opt/postal-bench/mariadb
 mariadb_port: 3306
-# Имя контейнера складывается из имени compose-проекта и имени сервиса.
+# The container name is composed of the compose project name and the service name.
 mariadb_container: "stand-db-mariadb-1"
 
-# --- Балансировщик HTTP API ------------------------------------------------
-# Только для HTTP API. Балансировка SMTP запрещена: HAProxy терминирует TCP,
-# и приёмник увидел бы адрес балансировщика вместо исходящего адреса, который
-# Postal привязал к сокету, — это уничтожило бы единственное сквозное
-# доказательство работы привязки IP.
+# --- HTTP API load balancer -----------------------------------------------
+# For the HTTP API only. SMTP load balancing is forbidden: HAProxy terminates TCP,
+# and the sink would see the balancer's address instead of the outbound address that
+# Postal bound to the socket — that would destroy the only end-to-end proof
+# that IP binding works.
 postal_lb_dir: /opt/postal-bench/lb
 postal_lb_port: 5100
 postal_lb_stats_port: 5101
 
-# --- Внутренний DNS -------------------------------------------------------
+# --- Internal DNS ---------------------------------------------------------
 test_dns_dir: /opt/postal-bench/coredns
 test_dns_port: 53
 test_dns_resolv_conf: /opt/postal-bench/resolv.conf
 
-# --- Приёмник -------------------------------------------------------------
+# --- Sink -----------------------------------------------------------------
 postfix_sink_dir: /opt/postal-bench/sink
 postfix_sink_port: 25
-# Метка, по которой доставка считается независимо от Postal.
+# The marker by which delivery is counted independently of Postal.
 postfix_sink_discard_token: "delivered-to-sink"
 postfix_sink_log: /opt/postal-bench/sink/log/postfix.log
 
-# --- Генератор и прогон ---------------------------------------------------
+# --- Load generator and run -----------------------------------------------
 loadgen_dir: /opt/postal-bench/loadgen
 loadgen_results_dir: /opt/postal-bench/loadgen/results
 bench_dir: /opt/postal-bench/run

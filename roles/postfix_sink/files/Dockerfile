@@ -1,4 +1,4 @@
-# Приёмник писем для стенда: Postfix, принимающий по SMTP и выбрасывающий.
+# The bench mail sink: Postfix that accepts over SMTP and discards.
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive

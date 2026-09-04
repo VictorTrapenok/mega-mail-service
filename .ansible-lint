@@ -7,12 +7,12 @@ exclude_paths:
   - .ansible_facts/
 
 skip_list:
-  # Роли стенда запускаются только своими плейбуками, метаданные Galaxy
-  # им не нужны.
+  # Test-bench roles are only ever launched by their own playbooks, so they
+  # do not need Galaxy metadata.
   - meta-no-info
-  # Плейбуки жизненного цикла (reset, benchmark, calibrate) неидемпотентны
-  # по замыслу: протокол сравнения требует одинакового стартового состояния
-  # перед каждым прогоном.
+  # Lifecycle playbooks (reset, benchmark, calibrate) are non-idempotent
+  # by design: the comparison protocol requires an identical starting state
+  # before every run.
   - no-changed-when
 
 warn_list:

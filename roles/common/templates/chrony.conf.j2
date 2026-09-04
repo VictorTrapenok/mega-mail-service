@@ -1,6 +1,6 @@
 {{ ansible_managed | comment }}
-# Единый источник времени для всех хостов стенда: латентность считается как
-# разница отметок, снятых на разных машинах.
+# A single time source for all bench hosts: latency is computed as the
+# difference between timestamps taken on different machines.
 
 {% for server in common_ntp_servers %}
 pool {{ server }} iburst

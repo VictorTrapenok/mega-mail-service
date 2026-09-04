@@ -1,5 +1,5 @@
 ---
-- name: Удалить пакеты Docker из дистрибутива
+- name: Remove the distribution Docker packages
   ansible.builtin.apt:
     name:
       - docker.io
@@ -9,7 +9,7 @@
       - runc
     state: absent
 
-- name: Добавить репозиторий Docker
+- name: Add the Docker repository
   ansible.builtin.deb822_repository:
     name: docker
     types: [deb]
@@ -21,31 +21,31 @@
     enabled: true
   register: docker_repo
 
-- name: Обновить кэш apt
+- name: Update the apt cache
   ansible.builtin.apt:
     update_cache: true
   when: docker_repo.changed
 
-- name: Установить Docker
+- name: Install Docker
   ansible.builtin.apt:
     name: "{{ docker_packages }}"
     state: present
   when: not docker_pin_versions
 
-- name: Установить Docker зафиксированных версий
+- name: Install Docker at the pinned versions
   ansible.builtin.apt:
     name: "{{ docker_packages | zip(docker_packages | map('extract', docker_pinned_versions)) | map('join', '=') | list }}"
     state: present
     allow_downgrade: true
   when: docker_pin_versions
 
-- name: Заморозить версии пакетов Docker
+- name: Freeze the Docker package versions
   ansible.builtin.dpkg_selections:
     name: "{{ item }}"
     selection: "{{ 'hold' if docker_pin_versions else 'install' }}"
   loop: "{{ docker_packages }}"
 
-- name: Настроить демон Docker
+- name: Configure the Docker daemon
   ansible.builtin.copy:
     dest: /etc/docker/daemon.json
     owner: root
@@ -59,18 +59,18 @@
           "max-file": "{{ docker_log_max_file }}"
         }
       }
-  notify: Перезапустить Docker
+  notify: Restart Docker
 
-- name: Включить Docker
+- name: Enable Docker
   ansible.builtin.systemd:
     name: docker
     state: started
     enabled: true
 
-- name: Применить отложенный перезапуск Docker до дальнейших задач
+- name: Apply the deferred Docker restart before any further tasks
   ansible.builtin.meta: flush_handlers
 
-- name: Зафиксировать версии Docker и Compose для отчёта
+- name: Capture the Docker and Compose versions for the report
   ansible.builtin.shell:
     cmd: |
       set -o pipefail
@@ -81,7 +81,7 @@
   changed_when: false
   register: docker_versions
 
-- name: Сохранить версии Docker в факты хоста
+- name: Store the Docker versions in host facts
   ansible.builtin.set_fact:
     stand_docker_version: "{{ docker_versions.stdout.split('\t')[0] }}"
     stand_compose_version: "{{ docker_versions.stdout.split('\t')[1] }}"

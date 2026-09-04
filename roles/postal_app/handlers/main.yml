@@ -1,5 +1,5 @@
 ---
-- name: Перезапустить Postal
+- name: Restart Postal
   community.docker.docker_compose_v2:
     project_src: "{{ postal_dir }}"
     state: restarted

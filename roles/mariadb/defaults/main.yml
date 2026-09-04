@@ -1,27 +1,27 @@
 ---
 
-# Параметры MariaDB фиксируются явно и вычитываются обратно после старта.
-# Причина: дефолтный innodb_buffer_pool_size — 128 МБ, и на очереди в несколько
-# миллионов строк стенд измеряет диск, а не код. Все сборки сойдутся на одном
-# и том же числе, и сравнение не даст сигнала.
+# MariaDB settings are pinned explicitly and read back after startup.
+# The reason: the default innodb_buffer_pool_size is 128 MB, and with a queue of several
+# million rows the bench measures the disk rather than the code. All builds converge on the
+# same number, and the comparison yields no signal.
 mariadb_pinned:
   innodb_buffer_pool_size: "4G"
-  # Документация Postal требует не меньше десятикратного размера самого
-  # большого письма: 250 МБ на 25 МБ письма.
+  # The Postal documentation requires at least ten times the size of the
+  # largest message: 250 MB for a 25 MB message.
   innodb_log_file_size: "512M"
   innodb_flush_log_at_trx_commit: "1"
   innodb_io_capacity: "2000"
   innodb_io_capacity_max: "4000"
   innodb_read_io_threads: "8"
   innodb_write_io_threads: "8"
-  # Должно с запасом перекрывать replicas x threads x pool_size,
-  # плюс подключения сэмплера и сверки.
+  # Must comfortably exceed replicas x threads x pool_size,
+  # plus the connections of the sampler and the reconciliation.
   max_connections: "500"
   transaction_isolation: "READ-COMMITTED"
 
-# Бинлог на стенде не нужен и удваивает запись на диск.
+# The binlog is not needed on the bench and doubles the disk writes.
 mariadb_binlog_enabled: false
 
-# performance_schema включается только диагностическим прогоном:
-# consumers задаются исключительно опциями старта, не через SET.
+# performance_schema is enabled only for a diagnostic run:
+# consumers can be set exclusively via startup options, not through SET.
 mariadb_perf_schema: false

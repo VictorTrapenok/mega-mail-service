@@ -1,73 +1,73 @@
-# Подтверждённые особенности Postal 3.3.7
+# Confirmed Postal 3.3.7 internals
 
-Всё ниже проверено чтением исходников тега `3.3.7`, а не документации. Каждый
-пункт объясняет конкретное решение в ролях стенда — если убрать пункт,
-непонятно, зачем роль устроена именно так.
+Everything below was verified by reading the sources of tag `3.3.7`, not the documentation. Each
+item explains a specific decision in the bench roles — remove the item and it becomes
+unclear why the role is built the way it is.
 
-Ссылки ведут на конкретные файлы. При обновлении версии Postal этот документ
-надо перепроверять: он описывает не намерения проекта, а фактическое поведение
-кода.
+The links point at specific files. When the Postal version is updated, this document
+must be re-checked: it describes not the project's intentions but the actual behaviour
+of the code.
 
-## Состав
+## Composition
 
-Три долгоживущих процесса из одного образа, различающиеся аргументом команды:
-`postal web-server`, `postal smtp-server`, `postal worker`. Плюс `runner` для
-разовых операций. RabbitMQ и процессы `cron` и `requeuer` удалены в 3.0.0;
-Redis не использовался никогда. Очередь живёт в MariaDB — это единственное
-внешнее хранилище.
+Three long-lived processes from a single image, differing by the command argument:
+`postal web-server`, `postal smtp-server`, `postal worker`. Plus `runner` for
+one-off operations. RabbitMQ and the `cron` and `requeuer` processes were removed in 3.0.0;
+Redis was never used. The queue lives in MariaDB — that is the only
+external storage.
 
-Образ собран на `ruby:3.4.6-slim-bookworm`, Rails 7.1.6, Puma. Только
-`linux/amd64`. Пользователь внутри — UID 999.
+The image is built on `ruby:3.4.6-slim-bookworm`, Rails 7.1.6, Puma. Only
+`linux/amd64`. The user inside is UID 999.
 
-## Что читать при отладке
+## What to read when debugging
 
-| Вопрос | Файл |
+| Question | File |
 |---|---|
-| Как воркер выбирает сообщения | `app/lib/worker/jobs/process_queued_messages_job.rb` |
-| Батчинг по домену | `app/models/queued_message.rb` |
-| Привязка исходящего IP | `config/initializers/smtp_extensions.rb`, `app/lib/smtp_client/endpoint.rb` |
-| Классификация ответов SMTP | `app/senders/smtp_sender.rb` |
-| Запись сообщения и статистики | `lib/postal/message_db/message.rb` |
-| Резолвер | `app/lib/dns_resolver.rb` |
-| Схема основной БД | `db/schema.rb` |
-| Имена переменных окружения | `doc/config/environment-variables.md` |
+| How the worker selects messages | `app/lib/worker/jobs/process_queued_messages_job.rb` |
+| Batching by domain | `app/models/queued_message.rb` |
+| Outbound IP binding | `config/initializers/smtp_extensions.rb`, `app/lib/smtp_client/endpoint.rb` |
+| Classification of SMTP responses | `app/senders/smtp_sender.rb` |
+| Writing the message and statistics | `lib/postal/message_db/message.rb` |
+| The resolver | `app/lib/dns_resolver.rb` |
+| The main DB schema | `db/schema.rb` |
+| Environment variable names | `doc/config/environment-variables.md` |
 
-## Единица нагрузки — получатель
+## The unit of load is a recipient
 
-`OutgoingMessagePrototype#create_messages` создаёт отдельное сообщение на
-каждого адресата. `Database#insert_raw_message` сохраняет MIME **двумя**
-longblob-строками в посуточную таблицу `raw-YYYY-MM-DD`, дедупликации нет.
+`OutgoingMessagePrototype#create_messages` creates a separate message for
+each addressee. `Database#insert_raw_message` stores the MIME as **two**
+longblob rows in the per-day table `raw-YYYY-MM-DD`; there is no deduplication.
 
-Письмо на 50 адресов — это 50 строк `messages`, 50 строк очереди и 100
-longblob-строк. При среднем MIME 100 КБ пять миллионов получателей означают
-около 500 ГБ сырых данных в сутки до индексов.
+A message to 50 addresses is 50 `messages` rows, 50 queue rows and 100
+longblob rows. At an average MIME of 100 KB, five million recipients mean
+about 500 GB of raw data per day before indexes.
 
-## Исходящий IP привязан к хосту воркера
+## The outbound IP is bound to the worker host
 
-`ProcessQueuedMessagesJob#find_ip_addresses` перечисляет адреса собственного
-сетевого пространства имён через `Socket.ip_address_list`, исключая только
-`127.*`, `fe80:` и `::`, и сопоставляет их строкам таблицы `ip_addresses`.
-Запрос захвата берёт только строки, у которых `ip_address_id` попал в этот
-набор **или равен NULL**.
+`ProcessQueuedMessagesJob#find_ip_addresses` enumerates the addresses of its own
+network namespace via `Socket.ip_address_list`, excluding only
+`127.*`, `fe80:` and `::`, and matches them against rows of the `ip_addresses` table.
+The claim query takes only rows whose `ip_address_id` falls into that
+set **or is NULL**.
 
-Отсюда три следствия, каждое из которых уже заложено в роли:
+Three consequences follow, each of which is already built into the roles:
 
-- В bridge-сети воркер видит только `172.x`, не совпадает ни с одной строкой
-  и при включённых пулах не обрабатывает **ничего**. Молча: ни исключения,
-  ни метрики, ни строки в логе. Поэтому стенд использует `network_mode: host`.
-- Осиротевшие строки не подбирает и задача уборки: `TidyQueuedMessagesTask`
-  реагирует только на устаревший лок, а у таких строк `locked_at IS NULL`.
-- Адрес обязан физически присутствовать на хосте воркера. Роль назначает
-  адреса на интерфейс и создаёт соответствующие строки в БД из одного
-  источника — inventory.
+- On a bridge network the worker sees only `172.x`, matches no row
+  and, with pools enabled, processes **nothing**. Silently: no exception,
+  no metric, no log line. That is why the bench uses `network_mode: host`.
+- The orphaned rows are not picked up by the cleanup task either: `TidyQueuedMessagesTask`
+  reacts only to a stale lock, while such rows have `locked_at IS NULL`.
+- The address must be physically present on the worker host. The role assigns
+  addresses to the interface and creates the corresponding DB rows from a single
+  source — the inventory.
 
-Сама привязка выполняется на уровне сокета: Postal патчит `Net::SMTP#tcp_socket`
-на `TCPSocket.open(address, port, source_address)`. Имя HELO берётся из
+The binding itself is performed at the socket level: Postal patches `Net::SMTP#tcp_socket`
+to `TCPSocket.open(address, port, source_address)`. The HELO name is taken from
 `ip_addresses.hostname`.
 
-## Очередь и её индексы
+## The queue and its indexes
 
-Запрос захвата:
+The claim query:
 
 ```sql
 UPDATE queued_messages
@@ -78,190 +78,190 @@ UPDATE queued_messages
  LIMIT 1
 ```
 
-В `db/schema.rb` у таблицы ровно три индекса: `domain` (префикс 8 символов),
-`message_id`, `server_id`. **Ни один предикат запроса не покрыт.**
+In `db/schema.rb` the table has exactly three indexes: `domain` (an 8-character prefix),
+`message_id`, `server_id`. **Not a single predicate of the query is covered.**
 
-Но линейной стоимости сам по себе этот запрос не даёт, и здесь важно не ошибиться.
-`ORDER BY` в нём нет, а есть `LIMIT 1`, поэтому просмотр по первичному ключу
-прерывается на первой подходящей строке. Когда очередь целиком готова к отправке,
-подходит уже первая строка, и стоимость не зависит от длины очереди вообще.
-Дорогим захват становится только тогда, когда в голове таблицы по `id` скопились
-**неподходящие** строки: залоченные, отложенные до `retry_after` или принадлежащие
-чужому `ip_address_id`. Именно так очередь вырождается в проде — письмо получило
-временный отказ и осталось со своим прежним, малым `id`, а свежие письма получают
-`id` больше. Поэтому длину очереди нужно задавать вместе с её составом:
-профиль «миллион готовых строк» покажет, что индекс не нужен.
+But this query on its own does not give linear cost, and it is important not to get this wrong.
+It has no `ORDER BY` but does have `LIMIT 1`, so the scan by primary key
+stops at the first suitable row. When the whole queue is ready to send,
+the very first row already qualifies, and the cost does not depend on the queue length at all.
+The claim only becomes expensive once **unsuitable** rows have accumulated at the head of the
+table by `id`: locked ones, ones deferred until `retry_after`, or ones belonging
+to a foreign `ip_address_id`. That is exactly how a queue degenerates in production — a message
+received a temporary rejection and stayed with its former, small `id`, while fresh messages get
+larger `id`s. Hence the queue length must be set together with its composition:
+a "one million ready rows" profile will show that no index is needed.
 
-Порог готовности — не «сейчас», а `retry_after < 30.seconds.ago`
-(`scope :ready_with_delayed_retry`). Сэмплер глубины очереди обязан повторять
-именно это условие, иначе он показывает воркеру запас работы, которого у того нет.
+The readiness threshold is not "now" but `retry_after < 30.seconds.ago`
+(`scope :ready_with_delayed_retry`). The queue depth sampler must reproduce
+exactly this condition, otherwise it shows the worker a backlog of work it does not have.
 
-Настоящий линейный рост даёт **второй** запрос. Захватив одну строку, воркер
-вызывает `batchable_messages(100)` (`app/lib/message_dequeuer/initial_processor.rb`),
-и тот добирает до 100 строк с тем же `batch_key = "outgoing-<домен получателя>"`.
-Индекса на `batch_key` тоже нет, а `LIMIT 100` прерывает просмотр либо по набору
-сотни, либо **по концу таблицы**. Сотня набирается только если на один домен
-приходится не меньше ста строк очереди; при тысяче доменов для этого нужна
-очередь в сотни тысяч строк. Пока её нет, запрос доходит до конца таблицы,
-и это происходит на **каждое** захваченное письмо.
+Genuinely linear growth comes from the **second** query. Having claimed one row, the worker
+calls `batchable_messages(100)` (`app/lib/message_dequeuer/initial_processor.rb`),
+which collects up to 100 rows with the same `batch_key = "outgoing-<recipient domain>"`.
+There is no index on `batch_key` either, and `LIMIT 100` stops the scan either once a
+hundred are collected or **at the end of the table**. A hundred is only collected if a single
+domain accounts for at least a hundred queue rows; with a thousand domains that requires a
+queue of hundreds of thousands of rows. Until there is one, the query runs to the end of the
+table, and this happens for **every** claimed message.
 
-Отсюда напрашивается следствие: стоимость обработки письма должна расти вместе
-с длиной очереди, поделённой на плотность его `batch_key`.
+The consequence this suggests: the cost of processing a message should grow together
+with the queue length divided by the density of its `batch_key`.
 
-**Измерением на стенде это НЕ подтверждено.** Две точки серии `drain.yml`
-при 1000 доменов дали ровно одинаковую скорость разбора — 20.8 получателей/с
-и на очереди 4851 строки, и на 9938; время дренажа выросло строго вдвое.
-Объяснение, скорее всего, в масштабе: десять тысяч строк целиком помещаются
-в буферный пул, и полный просмотр такой таблицы стоит единицы миллисекунд
-против примерно 96 мс, которые тратятся на письмо. На этом диапазоне скан
-просто теряется в шуме.
+**This has NOT been confirmed by measurement on the bench.** Two points in a `drain.yml` series
+at 1000 domains gave exactly the same drain rate — 20.8 recipients/s
+both at a queue of 4851 rows and at 9938; the drain time grew strictly twofold.
+The explanation most likely lies in scale: ten thousand rows fit entirely
+into the buffer pool, and a full scan of such a table costs a few milliseconds
+against the roughly 96 ms spent on a message. Over this range the scan
+simply gets lost in the noise.
 
-Значит гипотеза не опровергнута, но и не доказана: порог, за которым скан
-начинает доминировать, лежит выше доступного стенду диапазона. Набивка идёт
-штатным путём со скоростью приёма, и десять тысяч писем занимают около
-одиннадцати минут — миллион занял бы часов восемнадцать. Проверка требует
-bulk-пути через SQL, он отмечен в [roadmap](../roadmap.md).
+So the hypothesis is neither refuted nor proven: the threshold beyond which the scan
+starts to dominate lies above the range available to the bench. The fill proceeds
+the normal way at the ingress rate, and ten thousand messages take about
+eleven minutes — a million would take some eighteen hours. Checking it requires
+a bulk path through SQL; it is noted in the [roadmap](../roadmap.md).
 
-Практический вывод для сайзинга обратный ожидаемому и потому ценный: пока
-разбор поспевает за приёмом и очередь остаётся короткой, её длина на скорость
-не влияет, и закладывать запас «на деградацию очереди» не нужно. Риск возникает
-только если разбор перестаёт поспевать и очередь уходит в сотни тысяч строк —
-там поведение неизвестно.
+The practical sizing conclusion is the opposite of what was expected and therefore valuable: as
+long as draining keeps up with ingress and the queue stays short, its length does not affect
+the rate, and there is no need to budget headroom "for queue degradation". The risk arises
+only if draining stops keeping up and the queue grows to hundreds of thousands of rows —
+behaviour there is unknown.
 
-Кардинальность доменов при этом остаётся значимой независимо от длины очереди:
-отправка в один домен даёт почти стократный выигрыш на батчинге, и профиль
-`wide_domains` существует именно чтобы этот выигрыш убрать.
+Domain cardinality, meanwhile, remains significant regardless of queue length:
+sending to a single domain gives an almost hundredfold win on batching, and the
+`wide_domains` profile exists precisely to remove that win.
 
-## Точки сериализации
+## Serialisation points
 
-Не зависят от числа узлов, потому что находятся в общей БД инсталляции:
+They do not depend on the number of nodes, because they live in the installation's shared DB:
 
-- `Statistic.global.increment!` вызывается **дважды на каждое сообщение**,
-  и строка в таблице `statistics` одна на всю инсталляцию.
-- `UPDATE servers SET send_limit_* …` на каждую доставку — одна строка на сервер.
-- `UPDATE raw_message_sizes SET size = size + N` на каждое принятое письмо —
-  одна строка на посуточную таблицу.
+- `Statistic.global.increment!` is called **twice per message**,
+  and there is a single row in the `statistics` table for the whole installation.
+- `UPDATE servers SET send_limit_* …` on every delivery — one row per server.
+- `UPDATE raw_message_sizes SET size = size + N` on every accepted message —
+  one row per per-day table.
 
-Это главный контраргумент к гипотезе «медленный Ruby»: добавление воркеров
-и узлов эти три точки не разгружает.
+This is the main counterargument to the "slow Ruby" hypothesis: adding workers
+and nodes does not relieve these three points.
 
-## Классификация ответов SMTP
+## Classification of SMTP responses
 
-`smtp_sender.rb` переводит в `HardFail` только `Net::SMTPFatalError`.
-Всё остальное — `SMTPServerBusy`, `SMTPAuthenticationError`, `SMTPSyntaxError`,
-`SMTPUnknownError`, `ReadTimeout` и голый `StandardError` — становится
-`SoftFail` с повтором.
+`smtp_sender.rb` converts only `Net::SMTPFatalError` into `HardFail`.
+Everything else — `SMTPServerBusy`, `SMTPAuthenticationError`, `SMTPSyntaxError`,
+`SMTPUnknownError`, `ReadTimeout` and a bare `StandardError` — becomes
+`SoftFail` with a retry.
 
-С учётом `Net::SMTP::Response#exception_class` (`/\A4/` → ServerBusy,
-`/\A50/` → SyntaxError, `/\A53/` → AuthenticationError, `/\A5/` → FatalError)
-это означает: **`553` и `500–504` в Postal — SoftFail, а не окончательный отказ.**
-Матрица инжекции отказов должна исходить из этого, а не из семантики RFC 5321,
-иначе сверка будет иметь необъяснимое постоянное смещение.
+Taking `Net::SMTP::Response#exception_class` into account (`/\A4/` → ServerBusy,
+`/\A50/` → SyntaxError, `/\A53/` → AuthenticationError, `/\A5/` → FatalError),
+this means: **`553` and `500–504` are SoftFail in Postal, not a final rejection.**
+The fault injection matrix must proceed from this rather than from RFC 5321 semantics,
+otherwise the reconciliation will carry an unexplained constant bias.
 
-## Резолвер
+## The resolver
 
-`DNSResolver.local` разбирает `dns.resolv_conf_path` на предмет строк
-`nameserver` и выполняет запросы через `Resolv::DNS`. `/etc/hosts` не читается
-никогда и ни при каких настройках.
+`DNSResolver.local` parses `dns.resolv_conf_path` for `nameserver`
+lines and performs queries through `Resolv::DNS`. `/etc/hosts` is never read,
+under any configuration.
 
-`SMTPSender#resolve_mx_records_for_domain` вызывает `.mx(...)`,
-`SMTPClient::Server#endpoints` — сначала `.aaaa()`, затем `.a()`, то есть
-не меньше трёх запросов на сессию, без кэша и с новым сокетом на каждый.
+`SMTPSender#resolve_mx_records_for_domain` calls `.mx(...)`,
+`SMTPClient::Server#endpoints` calls `.aaaa()` first and then `.a()`, i.e.
+at least three queries per session, with no cache and a new socket for each.
 
-MX-запрос выполняется с `raise_timeout_errors: true`: неотвеченный запрос
-стоит около 10 секунд и **поднимает исключение**, превращаясь в SoftFail.
-Отсутствие быстрого авторитативного ответа выглядит как медленный Postal.
+The MX query runs with `raise_timeout_errors: true`: an unanswered query
+costs about 10 seconds and **raises an exception**, turning into a SoftFail.
+The absence of a fast authoritative answer looks like a slow Postal.
 
-Равноприоритетные MX-записи `mx` перемешивает, поэтому внутренний DNS — рабочий
-механизм распределения между приёмниками, а не компромисс.
+`mx` shuffles MX records of equal priority, so the internal DNS is a working
+mechanism for spreading load across sinks rather than a compromise.
 
-`POSTAL_SMTP_RELAYS` полностью отключает резолвинг MX: `SMTPSender#start`
-берёт `@servers || smtp_relays || resolve_mx_records_for_domain`. Хост релея
-при этом всё равно резолвится, и IP-литерал не работает.
+`POSTAL_SMTP_RELAYS` disables MX resolution entirely: `SMTPSender#start`
+takes `@servers || smtp_relays || resolve_mx_records_for_domain`. The relay host
+is still resolved, though, and an IP literal does not work.
 
-## Верификация домена
+## Domain verification
 
-Единственный гейт на отправку — колонка `verified_at`
-(`scope :verified, -> { where.not(verified_at: nil) }`). Колонки статусов
-DNS носят информационный характер.
+The only gate on sending is the `verified_at` column
+(`scope :verified, -> { where.not(verified_at: nil) }`). The DNS status
+columns are informational.
 
-`POSTAL_USE_LOCAL_NS_FOR_DOMAIN_VERIFICATION` по умолчанию **false**, и тогда
-Postal сначала резолвит NS домена, что для зоны `.test` не работает. Без этой
-переменной верификация ломается молча, а любая отправка падает с
+`POSTAL_USE_LOCAL_NS_FOR_DOMAIN_VERIFICATION` defaults to **false**, in which case
+Postal first resolves the domain's NS, which does not work for the `.test` zone. Without this
+variable, verification breaks silently and any send fails with
 `530 From/Sender name is not valid`.
 
-Полезные методы модели: `dkim_record`, `dkim_record_name`, `spf_record`,
+Useful model methods: `dkim_record`, `dkim_record_name`, `spf_record`,
 `dns_verification_string`, `verify_with_dns`, `mark_as_verified`.
 
-## Сидирование
+## Seeding
 
-Административного API нет: `config/routes.rb` отдаёт только `/api/v1/send/*`
-и `/api/v1/messages/*`, остальное — HTML-контроллеры за сессией.
-`postal make-user` интерактивен (HighLine).
+There is no administrative API: `config/routes.rb` exposes only `/api/v1/send/*`
+and `/api/v1/messages/*`, everything else is HTML controllers behind a session.
+`postal make-user` is interactive (HighLine).
 
-Прямой SQL опасен: `Server` в `after_create` создаёт свою базу сообщений
-(`message_db.provisioner.provision`), `Domain` в `before_create` генерирует
-DKIM-ключ. Поэтому единственный корректный путь — `rails runner` через модели.
+Raw SQL is dangerous: `Server` creates its own message database in `after_create`
+(`message_db.provisioner.provision`), and `Domain` generates the DKIM key in `before_create`.
+Hence the only correct path is `rails runner` through the models.
 
-`Credential#generate_key` безусловно выставляет ключ новой записи, а
-`validate_key_cannot_be_changed` запрещает менять его через модель. Значение
-фиксируется через `update_column`, иначе повторное сидирование молча ротирует
-ключи и генератор начинает получать `535` — то есть исправная сборка выглядит
-регрессией.
+`Credential#generate_key` unconditionally sets the key of a new record, and
+`validate_key_cannot_be_changed` forbids changing it through the model. The value is
+pinned via `update_column`, otherwise re-seeding silently rotates the
+keys and the generator starts getting `535` — i.e. a working build looks like
+a regression.
 
-SMTP-аутентификация сверяет только пароль
-(`Credential.where(type: 'SMTP', key: password)`), имя пользователя игнорируется.
+SMTP authentication checks the password only
+(`Credential.where(type: 'SMTP', key: password)`); the username is ignored.
 
-## Жизненный цикл схемы
+## Schema lifecycle
 
-`postal initialize` — это `rake db:create postal:update`. Задача `postal:update`
-ветвится: если `schema_migrations` существует и не пуста, выполняется
-`db:migrate`, иначе `db:schema:load`. Поэтому повторный запуск на
-инициализированной установке безопасен — в отличие от версии 2, где
-`initialize` был безусловным `db:schema:load`.
+`postal initialize` is `rake db:create postal:update`. The `postal:update` task
+branches: if `schema_migrations` exists and is not empty, `db:migrate` runs,
+otherwise `db:schema:load`. Hence re-running it on an
+initialised installation is safe — unlike version 2, where
+`initialize` was an unconditional `db:schema:load`.
 
-Опасный край: если `schema_migrations` пуста, а данные есть, ветка
-`db:schema:load` пересоздаст таблицы (`schema.rb` использует `force: :cascade`).
+The dangerous edge: if `schema_migrations` is empty but data exists, the
+`db:schema:load` branch will recreate the tables (`schema.rb` uses `force: :cascade`).
 
-Миграции баз сообщений **односторонние**: `Postal::MessageDB::Migration`
-определяет только `up`. Откат образа на предыдущую версию поверх
-мигрированной БД не выдаст ошибку — он просто выполнит старый код на новой
-схеме. Поэтому смена сборки требует сброса состояния, а не только подмены образа.
+Message database migrations are **one-way**: `Postal::MessageDB::Migration`
+defines only `up`. Rolling the image back to a previous version on top of a
+migrated DB will not raise an error — it will simply run old code against a new
+schema. Hence changing the build requires a state reset, not just swapping the image.
 
-## Наблюдаемость
+## Observability
 
-Prometheus-метрик в версии 3.x ровно одиннадцать, и среди них нет ни глубины
-очереди, ни счётчиков доставленного, отказавшего и удержанного. Web-процесс
-не отдаёт `/metrics` вообще.
+There are exactly eleven Prometheus metrics in version 3.x, and among them there is neither
+queue depth nor counters for delivered, failed and held. The web process
+does not serve `/metrics` at all.
 
-Health-сервер по умолчанию слушает `127.0.0.1`, а при занятом порте
-перехватывает `EADDRINUSE` и просто пишет в лог. При нескольких репликах
-на одном хосте метрики оказываются только у первой — «сервис запустился»
-и «сервис наблюдаем» здесь разные факты.
+The health server listens on `127.0.0.1` by default, and when the port is taken it
+catches `EADDRINUSE` and merely writes to the log. With several replicas
+on one host, only the first one ends up with metrics — "the service started"
+and "the service is observable" are different facts here.
 
-Гистограмма `postal_message_queue_latency` зарегистрирована без явных
-`buckets:`, поэтому наследует умолчания клиентской библиотеки с верхней
-конечной корзиной 10 секунд. Под нагрузкой все наблюдения попадают в `+Inf`,
-и обе сравниваемые сборки покажут одинаковый p99. Стенд её не использует.
+The `postal_message_queue_latency` histogram is registered without explicit
+`buckets:`, so it inherits the client library defaults with the highest
+finite bucket at 10 seconds. Under load all observations land in `+Inf`,
+and both compared builds will show the same p99. The bench does not use it.
 
-Штатный `script/queue_size.rb` содержит ошибку приоритета `AND`/`OR`
-и засчитывает залоченные строки как готовые.
+The stock `script/queue_size.rb` contains an `AND`/`OR` precedence bug
+and counts locked rows as ready.
 
-## Что удаляет само
+## What it deletes on its own
 
-`TidyQueuedMessagesTask` **уничтожает** сообщения, лок которых старше
-`POSTAL_QUEUED_MESSAGE_LOCK_STALE_DAYS` (по умолчанию 1), а не переоткрывает
-их. Пути «разлочить и повторить» не существует.
+`TidyQueuedMessagesTask` **destroys** messages whose lock is older than
+`POSTAL_QUEUED_MESSAGE_LOCK_STALE_DAYS` (1 by default) instead of reopening
+them. There is no "unlock and retry" path.
 
-Усугубляется тем, что `bin/postal` запускает Ruby без `exec`: PID 1 — это bash,
-обработчики сигналов не срабатывают на `docker stop`, и после каждого
-рестарта остаются залоченные строки.
+This is made worse by `bin/postal` starting Ruby without `exec`: PID 1 is bash,
+the signal handlers do not fire on `docker stop`, and locked rows are left behind
+after every restart.
 
-`ProcessMessageRetentionScheduledTask` ежедневно в 03:00 применяет
-`servers.raw_message_retention_size` (по умолчанию 2048 МБ) и делает
-`DROP TABLE` посуточных raw-таблиц. Это колонки сервера, а не переменные
-окружения.
+`ProcessMessageRetentionScheduledTask` applies `servers.raw_message_retention_size`
+daily at 03:00 (2048 MB by default) and issues
+`DROP TABLE` on the per-day raw tables. These are server columns, not environment
+variables.
 
-Список подавления пополняется после **двух** HardFail на адрес за сутки,
-и все последующие письма ему становятся `Held`. Между прогонами серии он
-переносится, если его не очистить.
+The suppression list is extended after **two** HardFails per address within a day,
+and all subsequent messages to it become `Held`. It carries over between runs of a series
+unless it is cleared.

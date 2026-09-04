@@ -1,85 +1,85 @@
 ---
-# Конфигурация Postal.
+# Postal configuration.
 #
-# Postal настраивается ТОЛЬКО переменными окружения: Konfig загружает источник
-# Environment раньше YAML, поэтому env всегда выигрывает у файла. В /config
-# остаётся один signing.key. Имена переменных сверены с
-# doc/config/environment-variables.md тега 3.3.7.
+# Postal is configured ONLY through environment variables: Konfig loads the Environment
+# source before YAML, so env always wins over the file. Only signing.key is left
+# in /config. Variable names have been checked against
+# doc/config/environment-variables.md of tag 3.3.7.
 #
-# ВНИМАНИЕ: переменные PORT и BIND_ADDRESS перекрывают и web-сервер, и SMTP-сервер
-# одновременно. Их нельзя задавать на уровне группы — только формы *_DEFAULT_*
-# в шаблоне compose, отдельно для каждого контейнера.
+# WARNING: the PORT and BIND_ADDRESS variables override both the web server and the SMTP
+# server at the same time. They must not be set at group level — only the *_DEFAULT_*
+# forms in the compose template, separately for each container.
 
 postal_test_domain: "bench.test"
 postal_smtp_hostname: "postal.bench.test"
 postal_web_hostname: "postal.bench.test"
 
-# --- Порты ----------------------------------------------------------------
-# Ingress Postal подвинут на 2525, потому что MX-запись не несёт номер порта:
-# sink обязан слушать 25, а генератор наш и пойдёт куда скажут. Благодаря этому
-# одна раскладка работает и на одном сервере, и на нескольких.
+# --- Ports ----------------------------------------------------------------
+# Postal ingress is moved to 2525 because an MX record does not carry a port number:
+# the sink must listen on 25, whereas the generator is ours and will go wherever it is told.
+# Thanks to this, one layout works both on a single server and on several.
 postal_smtp_port: 2525
 postal_web_port: 5000
-# Базы разнесены с запасом: при двух и более репликах воркера порт
-# postal_worker_health_port_base + 1 иначе совпал бы с портом health-сервера
-# SMTP, и проверка второй реплики опрашивала бы чужой процесс — зелёную,
-# но чужую.
+# The bases are spread apart with room to spare: with two or more worker replicas the port
+# postal_worker_health_port_base + 1 would otherwise collide with the SMTP health server
+# port, and the check for the second replica would poll a foreign process — green,
+# but the wrong one.
 postal_worker_health_port_base: 9200
 postal_smtp_health_port_base: 9100
 
-# --- Базы данных ----------------------------------------------------------
+# --- Databases ------------------------------------------------------------
 postal_main_db_name: "postal"
 postal_message_db_prefix: "postal"
 
-# Дефолт пула — 5, что мало для сколько-нибудь заметного числа воркеров.
-# Значение осмысленно поднимать только вместе с max_connections MariaDB
-# и с оглядкой на row locks; это отдельный измеряемый эксперимент.
+# The pool default is 5, which is too little for any noticeable number of workers.
+# Raising the value only makes sense together with MariaDB's max_connections
+# and with an eye on row locks; that is a separate measured experiment.
 postal_main_db_pool_size: 25
 
-# --- Приём ----------------------------------------------------------------
-# Число процессов web. Увеличивать надо именно процессы, а не потоки: у MRI
-# Ruby есть GVL, и один процесс Puma не выполняет CPU-bound работу (сборка
-# multipart, quoted-printable, подпись DKIM) больше чем на одном ядре.
-# Измерено: web упирается в 92.5 % при лимите ровно 1.0 CPU, то есть около
-# 15 получателей/с на процесс при MIME 100 КБ. Реплики слушают подряд идущие
-# порты, начиная с postal_web_port, и закрываются балансировщиком.
+# --- Ingress --------------------------------------------------------------
+# The number of web processes. It is processes that must be increased, not threads: MRI
+# Ruby has a GVL, and a single Puma process does not perform CPU-bound work (building
+# multipart, quoted-printable, DKIM signing) on more than one core.
+# Measured: web tops out at 92.5 % under a limit of exactly 1.0 CPU, that is about
+# 15 recipients/s per process at a MIME size of 100 KB. Replicas listen on consecutive
+# ports starting from postal_web_port and are fronted by the load balancer.
 postal_web_replicas: 1
 
-# --- Воркеры --------------------------------------------------------------
-# Эффективная конкурентность = replicas x threads. Дефолт threads — 2.
-# Здесь действует тот же GVL: воркер держал 89.2 % при лимите 200 %, то есть
-# меньше ядра, поэтому потоки помогают лишь на время ожидания ввода-вывода,
-# а счётная часть всё равно упирается в одно ядро на процесс.
+# --- Workers --------------------------------------------------------------
+# Effective concurrency = replicas x threads. The threads default is 2.
+# The same GVL applies here: the worker held 89.2 % under a 200 % limit, i.e.
+# less than one core, so threads only help while waiting on I/O,
+# and the compute part still tops out at one core per process.
 postal_worker_replicas: 1
 postal_worker_threads: 2
 
-# --- Параметры, которые нельзя оставлять по умолчанию ---------------------
+# --- Settings that must not be left at their defaults ---------------------
 
-# TidyQueuedMessagesTask УНИЧТОЖАЕТ сообщения с устаревшим локом, а не
-# переоткрывает их. Дополнительно bin/postal запускает Ruby без exec, поэтому
-# PID 1 — это bash, обработчики сигналов не срабатывают на docker stop,
-# и после каждого рестарта остаются залоченные строки. Ставим заведомо больше
-# длительности любого прогона.
+# TidyQueuedMessagesTask DESTROYS messages with a stale lock instead of
+# reopening them. On top of that, bin/postal starts Ruby without exec, so
+# PID 1 is bash, signal handlers do not fire on docker stop,
+# and locked rows are left behind after every restart. We set a value that is
+# knowingly larger than the duration of any run.
 postal_queued_message_lock_stale_days: 30
 
-# По умолчанию false: Postal сначала резолвит NS домена, что на .test не работает,
-# и верификация домена молча ломается.
+# Defaults to false: Postal first resolves the domain's NS, which does not work in .test,
+# and domain verification breaks silently.
 postal_use_local_ns_for_domain_verification: true
 
-# На single-host у воркера нет отдельных исходящих адресов, а при включённых пулах
-# каждому сообщению назначается ip_address_id, которого нет ни на одном хосте.
-# Такая очередь встаёт полностью и молча: осиротевшие строки не видит даже
-# tidy-задача, потому что у них locked_at IS NULL.
+# On a single host the worker has no separate outbound addresses, and with pools enabled
+# every message is assigned an ip_address_id that does not exist on any host.
+# Such a queue stalls completely and silently: the orphaned rows are not even seen by the
+# tidy task, because their locked_at IS NULL.
 postal_use_ip_pools: false
 
-# Батчинг по домену получателя. Оставляем включённым (значение по умолчанию),
-# но помним: он даёт до 100 писем в батч, поэтому кардинальность доменов
-# в профиле нагрузки напрямую влияет на результат.
+# Batching by recipient domain. We leave it enabled (the default value),
+# but keep in mind: it packs up to 100 messages into a batch, so the domain cardinality
+# of the load profile directly affects the result.
 postal_batch_queued_messages: true
 
 # --- DNS ------------------------------------------------------------------
-# Дефолты Postal указывают на реальные резолвимые *.postal.example.com —
-# в закрытом контуре это недопустимо, всё переезжает в .test.
+# Postal's defaults point at real, resolvable *.postal.example.com names —
+# that is unacceptable in a closed environment, so everything moves to .test.
 postal_dns:
   mx_records: ["mx.{{ postal_test_domain }}"]
   spf_include: "spf.{{ postal_test_domain }}"
@@ -89,20 +89,20 @@ postal_dns:
   domain_verify_prefix: "postal-verification"
   custom_return_path_prefix: "psrp"
   helo_hostname: "{{ postal_smtp_hostname }}"
-  # Дефолт 5 даёт последовательность таймаутов 5 / 2.5 / 2.5 на резолвер.
-  # Снижаем, чтобы ошибка конфигурации падала быстро, а не подвешивала воркеры.
+  # The default of 5 yields a timeout sequence of 5 / 2.5 / 2.5 per resolver.
+  # We lower it so that a configuration error fails fast instead of hanging the workers.
   timeout: 2
   resolv_conf_path: "/etc/resolv.conf"
 
-# smtp_relays полностью отключает MX-резолвинг, поэтому по умолчанию пусто.
-# Использовать только как отладочный обход и только с резолвимым FQDN:
-# IP-литерал в smtp_relays в Postal v3 не работает.
+# smtp_relays disables MX resolution entirely, so it is empty by default.
+# Use it only as a debugging workaround and only with a resolvable FQDN:
+# an IP literal in smtp_relays does not work in Postal v3.
 postal_smtp_relays: []
 
-# TLS на ingress по умолчанию выключен в Postal. Задаём явно, чтобы значение
-# не стало случайным отличием между сборками.
+# TLS on ingress is disabled by default in Postal. We set it explicitly so that the value
+# does not become an accidental difference between builds.
 postal_smtp_tls_enabled: false
 
-# Максимальный размер сообщения (МБ). Должен быть согласован
-# с message_size_limit на стороне Postfix sink.
+# Maximum message size (MB). Must be kept consistent
+# with message_size_limit on the Postfix sink side.
 postal_smtp_max_message_size: 25

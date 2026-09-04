@@ -1,33 +1,33 @@
 # CLAUDE.md
 
-> **Оглавление всей документации проекта** (со ссылками на отдельные .md файлы по подсистемам) находится в [ARCHITECTURE.md](./ARCHITECTURE.md). Используй его, чтобы быстро найти документацию по нужной фиче.
+> The **table of contents for the whole project documentation** (with links to the individual .md files per subsystem) is in [ARCHITECTURE.md](./ARCHITECTURE.md). Use it to quickly find the documentation for the feature you need.
 
-Отвечай на русском языке.
+Answer in the same language that was used in question.
 
-## Архитектурные принципы и стиль
+## Architectural principles and style
 
-- Мы делаем высокопроизводительную оптимизацию postalserver а также тестовый стенд для проверки того насколько мы смогли оптимизировать нашу сборку почтового сервера.
-- На данный момент мы на стадии PoC и MVP Читаемость кода и его простота поддержки важнее производительности.
-- Добавляй в код документирующие комментарии на русском языке. Если это комментарий к функции или методу класса или к свойству то он должен быть документирующий (тоесть начинаться с /\*\* )
+- We are building a high-performance optimisation of postalserver, plus a test bench for verifying how far we managed to optimise our build of the mail server.
+- At the moment we are at the PoC and MVP stage. Readability of the code and ease of maintaining it matter more than performance.
+- Add documenting comments to the code in English. If it is a comment on a function, a class method or a property, it must be a documenting comment (that is, it must start with /\*\* )
 
-## Порядок обновления документации
+## How to update the documentation
 
-Файлы CLAUDE.md и ARCHITECTURE.md - должны содержать общие базовые принципы. Детали архитектуры должны располагаться в отдельных .md файлах. А CLAUDE.md и ARCHITECTURE.md будут на них ссылаться выполняя роль оглавления или глоссария. Это позволит нам не перегружать эти файлы избыточными деталями и поддерживать их в актуальном состоянии. Если ты вносишь изменения в код, которые требуют обновления документации, то:
+The CLAUDE.md and ARCHITECTURE.md files must contain the general baseline principles. Architectural details must live in separate .md files, while CLAUDE.md and ARCHITECTURE.md link to them, acting as a table of contents or glossary. This lets us avoid overloading these files with excessive detail and keep them up to date. If you make changes to the code that require documentation updates, then:
 
-1. Определи, какие части документации нужно обновить (CLAUDE.md, ARCHITECTURE.md или отдельные файлы)
-2. Внеси необходимые изменения в код и протестируй их
-3. Обнови соответствующие части документации, добавив ссылки на новые файлы в CLAUDE.md и ARCHITECTURE.md, если это необходимо
-4. Убедись, что документация понятна и соответствует текущему состоянию кода
+1. Determine which parts of the documentation need updating (CLAUDE.md, ARCHITECTURE.md or separate files)
+2. Make the necessary changes to the code and test them
+3. Update the corresponding parts of the documentation, adding links to new files in CLAUDE.md and ARCHITECTURE.md if necessary
+4. Make sure the documentation is clear and matches the current state of the code
 
-- Добавляй документацию рядом с кодом (в той же папке), который она описывает.
-- Примеры вызовов в документации могут устаревать. Лучше в документации оставь назания функций и общее назначение, а списки аргументов и примеры вызовов описывай в коде в документирующем комментарии.
-- Новые термины упоясни в разделе "Глоссарий" в ARCHITECTURE.md
+- Put documentation next to the code it describes (in the same folder).
+- Call examples in documentation can go stale. It is better to keep function names and general purpose in the documentation, and to describe argument lists and call examples in the code, in a documenting comment.
+- Explain new terms in the "Glossary" section of ARCHITECTURE.md
 
 # roadmap.md
 
-- Если в момент выполнения задачи Агент что-то не доделал то надо добавить запись об этом в файл roadmap.md
-- В конце выполнения каждой задачи предлагай добавить в roadmap.md новые функции или доработки которые посчитаешь полезными для развития приложения и дальнейших шагов по его улучшению.
+- If, while carrying out a task, the Agent left something unfinished, a note about it must be added to the roadmap.md file
+- At the end of every task, propose adding to roadmap.md any new features or improvements you consider useful for developing the application and for the next steps in improving it.
 
 # CHANGELOG.md
 
-В CHANGELOG.md пиши очень кратко список выполненых задач. Его можно будет использовать для исторических справок того что сделано и когда.
+In CHANGELOG.md write a very brief list of completed tasks. It can be used for historical reference about what was done and when.

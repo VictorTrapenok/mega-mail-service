@@ -27,13 +27,13 @@ services:
           cpus: "{{ mariadb_limits.cpus }}"
           memory: "{{ mariadb_limits.memory }}"
 {% if mariadb_cpuset %}
-    # cpuset, а не квота CPU: квота CFS душит контейнер на границах
-    # 100-мс периодов, показывая среднюю загрузку заметно ниже 100 %.
+    # cpuset rather than a CPU quota: the CFS quota throttles the container at
+    # 100 ms period boundaries while reporting an average load noticeably below 100 %.
     cpuset: "{{ mariadb_cpuset }}"
 {% endif %}
 
 volumes:
-  # Именованный том: reset в режиме snapshot пересоздаёт именно его,
-  # и это единственный способ уравнять прогретость буферного пула
-  # и разметку табличных пространств между прогонами.
+  # A named volume: reset in snapshot mode recreates exactly this one,
+  # and it is the only way to equalise buffer pool warmth
+  # and tablespace layout between runs.
   stand_db_data: {}

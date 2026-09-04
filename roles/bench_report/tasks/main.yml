@@ -1,19 +1,19 @@
 ---
-# Сборка отчёта о прогоне. Работает после bench_run и читает то, что тот оставил.
+# Building the run report. Runs after bench_run and reads what it left behind.
 #
-# Доставка НЕ пересчитывается здесь заново: bench_run снял счётчики приёмника
-# на границах окна, и разность уже лежит в bench_delivered. Повторный подсчёт
-# по всему логу включал бы прогрев и остатки прошлых прогонов.
+# Delivery is NOT recomputed here from scratch: bench_run read the sink counters
+# at the window boundaries, and the difference already sits in bench_delivered. Recounting
+# over the whole log would include the warm-up and leftovers from previous runs.
 
-- name: Выполнить сверку по корзинам состояний
+- name: Reconcile by state buckets
   community.mysql.mysql_query:
     login_host: "{{ postal_message_db_addr }}"
     login_port: "{{ mariadb_port }}"
     login_user: "{{ mariadb_postal_user }}"
     login_password: "{{ mariadb_postal_password }}"
     login_db: "{{ postal_seed.message_db_name }}"
-    # messages.timestamp — это decimal(18,6) с эпохой Unix, а не DATETIME,
-    # поэтому границы окна сравниваются с числами, а не с NOW().
+    # messages.timestamp is a decimal(18,6) holding a Unix epoch, not a DATETIME,
+    # so the window boundaries are compared against numbers rather than NOW().
     query: >-
       SELECT status, COUNT(*) AS n FROM messages
       WHERE scope = 'outgoing'
@@ -24,23 +24,23 @@
   changed_when: false
   delegate_to: "{{ groups['postal_main_db'] | first }}"
 
-- name: Собрать корзины в словарь
+- name: Collect the buckets into a dictionary
   ansible.builtin.set_fact:
     bench_buckets: >-
       {{ dict(reconcile_raw.query_result[0] | map(attribute='status')
               | zip(reconcile_raw.query_result[0] | map(attribute='n'))) }}
 
-- name: Посчитать остаток в очереди
+- name: Count the queue remainder
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
     login_user: "{{ mariadb_postal_user }}"
     login_password: "{{ mariadb_postal_password }}"
     login_db: "{{ postal_main_db_name }}"
-    # SUM возвращает DECIMAL, а модуль не умеет сериализовать Decimal при
-    # включённом no_log и падает с «Value of unknown type». Пока очередь
-    # оставалась пустой, SUM отдавал NULL и ошибка не проявлялась.
-    # Приведение к SIGNED убирает её у источника.
+    # SUM returns a DECIMAL, and the module cannot serialise Decimal when
+    # no_log is enabled, failing with "Value of unknown type". While the queue
+    # stayed empty, SUM returned NULL and the error did not show up.
+    # Casting to SIGNED removes it at the source.
     query: >-
       SELECT
         COUNT(*) AS total,
@@ -50,27 +50,27 @@
   changed_when: false
   delegate_to: "{{ groups['postal_main_db'] | first }}"
 
-# Окно чтения логов воркера вычисляется, а не берётся из конфигурации: сумма
-# настроенных таймаутов покрыла бы и предыдущий прогон, и его строки
-# «removing queued message» выглядели бы находкой текущего. Отсчёт ведётся
-# от начала прогрева, потому что удаление могло случиться и в нём.
-- name: Взять текущее время для окна чтения логов
+# The worker log reading window is computed rather than taken from the configuration: the sum
+# of the configured timeouts would also cover the previous run, and its
+# "removing queued message" lines would look like a finding of the current one. The count runs
+# from the start of the warm-up, because a removal could have happened there too.
+- name: Take the current time for the log reading window
   ansible.builtin.command:
     argv: [date, -u, +%s]
   delegate_to: "{{ groups['postal_workers'] | first }}"
   changed_when: false
   register: report_clock
 
-- name: Вычислить окно чтения логов воркера
+- name: Compute the worker log reading window
   ansible.builtin.set_fact:
     bench_run_seconds: >-
       {{ (report_clock.stdout | trim | int) - (bench_window_start | int)
          + (0 if bench_report_kind == 'drain' else (bench_warmup_s | int)) + 60 }}
 
-# Воркер УНИЧТОЖАЕТ сообщения с устаревшим локом, а не переоткрывает их.
-# Если это случилось, сверка не сойдётся, и причина должна быть названа,
-# а не списана на погрешность.
-- name: Проверить, что сообщения не удалялись молча
+# The worker DESTROYS messages with a stale lock instead of reopening them.
+# If that happened, the reconciliation will not add up, and the cause must be named
+# rather than written off as measurement error.
+- name: Check that no messages were removed silently
   ansible.builtin.shell:
     cmd: >-
       docker compose -f {{ postal_dir }}/docker-compose.yml logs --no-color --since {{ bench_run_seconds }}s
@@ -81,9 +81,9 @@
   register: silent_removals
   changed_when: false
 
-# Счётчик читается со ВСЕХ хостов, где стоит изоляция, и суммируется.
-# Чтение с одного хоста означало бы, что утечка с любого другого не видна.
-- name: Прочитать счётчики попыток утечки
+# The counter is read from ALL hosts with containment and summed.
+# Reading from a single host would mean a leak from any other one stays invisible.
+- name: Read the leak attempt counters
   ansible.builtin.shell:
     cmd: >-
       nft -j list counter inet mailguard smtp_escape_attempts
@@ -94,20 +94,20 @@
   loop: "{{ containment_hosts }}"
   register: escape_counters
   changed_when: false
-  # Не роняем сбор отчёта: нечитаемость счётчика — это факт, который должен
-  # попасть в отчёт как «изоляция не подтверждена», а не потерять весь прогон.
+  # We do not fail report collection: an unreadable counter is a fact that must
+  # reach the report as "containment not confirmed" rather than lose the whole run.
   failed_when: false
 
-- name: Свести счётчики утечек
+- name: Aggregate the leak counters
   ansible.builtin.set_fact:
-    # Нечитаемый счётчик — это НЕ ноль. Пустое значение в отчёте выглядело бы
-    # как «ничего не ушло», поэтому нечитаемость отмечается явно.
+    # An unreadable counter is NOT a zero. An empty value in the report would look
+    # like "nothing escaped", so unreadability is flagged explicitly.
     bench_escape_readable: "{{ escape_counters.results | rejectattr('rc', 'equalto', 0) | list | length == 0 }}"
     bench_escape_packets: >-
       {{ escape_counters.results | selectattr('rc', 'equalto', 0)
          | map(attribute='stdout') | map('trim') | map('int') | sum }}
 
-- name: Прочитать digest фактически запущенного образа Postal
+- name: Read the digest of the actually running Postal image
   ansible.builtin.shell:
     cmd: >-
       docker inspect --format '{% raw %}{{index .Config.Image}}{% endraw %}'
@@ -118,23 +118,23 @@
   register: running_image
   changed_when: false
 
-- name: Забрать сводку измеряемой фазы генератора
+- name: Fetch the summary of the measured generator phase
   ansible.builtin.slurp:
     src: "{{ loadgen_results_dir }}/{{ bench_run_id }}-{{ bench_report_loadgen_phase }}-summary.json"
   delegate_to: "{{ groups['load_generators'] | first }}"
   register: loadgen_summary_raw
 
-- name: Разобрать сводку генератора
+- name: Parse the generator summary
   ansible.builtin.set_fact:
     loadgen_summary: "{{ loadgen_summary_raw.content | b64decode | from_json }}"
 
-# Итоговые числа считаются здесь, а не только в шаблоне: на них ссылается
-# проверка допуска сверки, а отчёт, который никто не проверяет, — это просто
-# красиво оформленное предположение.
+# The final numbers are computed here rather than only in the template: the reconciliation
+# tolerance check refers to them, and a report nobody verifies is just
+# a nicely formatted assumption.
 #
-# Обращение к метрикам k6 только индексной записью: в Jinja `.values`
-# разрешается в метод словаря dict.values, а не в ключ "values".
-- name: Свести итоги прогона
+# k6 metrics are accessed with index notation only: in Jinja, `.values`
+# resolves to the dict.values method rather than to the "values" key.
+- name: Aggregate the run results
   ansible.builtin.set_fact:
     bench_accepted: "{{ loadgen_summary.metrics['postal_accepted_recipients']['values']['count'] | default(0) | int }}"
     bench_rejected: "{{ loadgen_summary.metrics['postal_rejected_recipients']['values']['count'] | default(0) | int }}"
@@ -143,23 +143,23 @@
     bench_in_flight: "{{ queue_left.query_result[0][0].in_flight | default(0) | int }}"
   run_once: true
 
-- name: Вычислить расхождение сверки
+- name: Compute the reconciliation discrepancy
   ansible.builtin.set_fact:
-    # Терминальные корзины берём из фактических статусов, а не из
-    # заранее известного списка: неучтённый статус иначе молча выпал бы
-    # из тождества и превратился бы в «не учтено» без объяснения.
-    # Pending — это НЕ терминальное состояние, а ровно те письма, что лежат
-    # в очереди. Складывать его с остатком очереди значит считать их дважды.
-    # Прежде это не проявлялось только потому, что к моменту отчёта дренаж
-    # завершался и Pending всегда оказывался нулём.
+    # The terminal buckets are taken from the actual statuses rather than from a
+    # known-in-advance list: an unaccounted-for status would otherwise silently drop out
+    # of the identity and turn into "unaccounted" with no explanation.
+    # Pending is NOT a terminal state but exactly the messages sitting
+    # in the queue. Adding it to the queue remainder means counting them twice.
+    # This did not show up before only because by report time the drain
+    # had finished and Pending was always zero.
     bench_pending: "{{ bench_buckets.Pending | default(0) | int }}"
     bench_terminal: >-
       {{ bench_buckets | dict2items | rejectattr('key', 'equalto', 'Pending')
          | map(attribute='value') | map('int') | sum }}
-    # В прогоне приёма остаток очереди нельзя брать по всей таблице: воркеры
-    # остановлены, поэтому в ней лежат ещё и письма прогрева, а принятое
-    # считается только за окно. Тождество здесь другое — принятое обязано
-    # совпасть с приростом очереди за то же окно.
+    # In an ingress run the queue remainder must not be taken over the whole table: the workers
+    # are stopped, so it also holds the warm-up messages, whereas what was accepted
+    # is counted over the window only. The identity here is different — what was accepted must
+    # match the queue increment over the same window.
     bench_unaccounted: >-
       {{ (bench_accepted | int)
          - (bench_buckets | dict2items | rejectattr('key', 'equalto', 'Pending')
@@ -168,7 +168,7 @@
             if bench_report_kind == 'ingress' else (bench_queued_now | int)) }}
   run_once: true
 
-- name: Создать каталог отчётов
+- name: Create the reports directory
   ansible.builtin.file:
     path: "{{ bench_reports_dir }}"
     state: directory
@@ -177,7 +177,7 @@
   become: false
   run_once: true
 
-- name: Собрать отчёт
+- name: Build the report
   ansible.builtin.template:
     src: report.md.j2
     dest: "{{ bench_reports_dir }}/{{ bench_run_id }}.md"
@@ -186,23 +186,23 @@
   become: false
   run_once: true
 
-# Прогон, в котором сверка не сошлась, не является результатом: расхождение
-# означает либо потерю писем, либо потерю строк лога. Отчёт при этом остаётся
-# на диске — по нему и разбираются с причиной.
-- name: Проверить, что сверка сошлась
+# A run whose reconciliation did not add up is not a result: a discrepancy
+# means either lost messages or lost log lines. The report nevertheless stays
+# on disk — it is what the cause is investigated from.
+- name: Check that the reconciliation adds up
   ansible.builtin.assert:
     that:
       - bench_accepted | int > 0
       - (bench_unaccounted | int | abs) <= (bench_accepted | int) * (bench_reconcile_tolerance | float)
     fail_msg: >-
-      Сверка не сошлась: принято {{ bench_accepted }}, не учтено
-      {{ bench_unaccounted }} при допуске
+      The reconciliation did not add up: {{ bench_accepted }} accepted,
+      {{ bench_unaccounted }} unaccounted for against a tolerance of
       {{ (bench_reconcile_tolerance | float) * 100 }} %.
-      Подробности в {{ bench_reports_dir }}/{{ bench_run_id }}.md
-    success_msg: "Сверка сошлась, расхождение {{ bench_unaccounted }} из {{ bench_accepted }}."
+      Details in {{ bench_reports_dir }}/{{ bench_run_id }}.md
+    success_msg: "The reconciliation adds up, discrepancy {{ bench_unaccounted }} out of {{ bench_accepted }}."
   run_once: true
 
-- name: Показать путь к отчёту
+- name: Show the path to the report
   ansible.builtin.debug:
-    msg: "Отчёт: {{ bench_reports_dir }}/{{ bench_run_id }}.md"
+    msg: "Report: {{ bench_reports_dir }}/{{ bench_run_id }}.md"
   run_once: true

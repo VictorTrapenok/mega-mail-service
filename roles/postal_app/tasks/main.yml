@@ -1,5 +1,5 @@
 ---
-- name: Создать каталоги Postal
+- name: Create the Postal directories
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
@@ -11,10 +11,10 @@
     - "{{ postal_config_dir }}"
     - "{{ postal_dir }}/scripts"
 
-# Postal при network_mode: host унаследовал бы хостовой /etc/resolv.conf,
-# то есть systemd-resolved на 127.0.0.53, который MX-запросы форвардит наружу.
-# Хостовое разрешение имён не трогаем — подсовываем отдельный файл.
-- name: Подготовить resolv.conf для контейнеров Postal
+# With network_mode: host, Postal would inherit the host's /etc/resolv.conf,
+# i.e. systemd-resolved on 127.0.0.53, which forwards MX queries to the outside.
+# We do not touch host name resolution — we hand it a separate file instead.
+- name: Prepare resolv.conf for the Postal containers
   ansible.builtin.copy:
     dest: "{{ test_dns_resolv_conf }}"
     owner: root
@@ -25,47 +25,47 @@
       nameserver {{ test_dns_addr }}
       options timeout:{{ postal_dns.timeout }} attempts:2
 
-# Ключ подписи — единственное, что остаётся в /config: всё остальное
-# задаётся переменными окружения, которые Konfig читает раньше YAML.
-- name: Сгенерировать ключ подписи
+# The signing key is the only thing left in /config: everything else
+# is set through environment variables, which Konfig reads before YAML.
+- name: Generate the signing key
   ansible.builtin.command:
     argv: [openssl, genrsa, "-out", "{{ postal_config_dir }}/signing.key", "{{ postal_signing_key_bits }}"]
     creates: "{{ postal_config_dir }}/signing.key"
 
-- name: Выставить права на ключ подписи
+- name: Set the permissions on the signing key
   ansible.builtin.file:
     path: "{{ postal_config_dir }}/signing.key"
-    # UID 999 — пользователь postal внутри образа.
+    # UID 999 is the postal user inside the image.
     owner: "999"
     mode: "0600"
 
-- name: Развернуть compose-файл Postal
+- name: Deploy the Postal compose file
   ansible.builtin.template:
     src: docker-compose.yml.j2
     dest: "{{ postal_dir }}/docker-compose.yml"
     owner: root
     group: root
     mode: "0644"
-  notify: Перезапустить Postal
+  notify: Restart Postal
 
-- name: Запустить Postal
+- name: Start Postal
   community.docker.docker_compose_v2:
     project_src: "{{ postal_dir }}"
     state: present
     wait: true
     wait_timeout: 180
-    # Число реплик приёма и воркеров задаётся inventory, и при его уменьшении
-    # лишние контейнеры иначе остались бы работать: они продолжали бы держать
-    # свои порты и разбирать очередь, а отчёт печатал бы конфигурацию,
-    # которой на хосте уже нет.
+    # The number of ingress and worker replicas is set by the inventory, and when it is
+    # reduced the surplus containers would otherwise keep running: they would go on holding
+    # their ports and draining the queue, while the report would print a configuration
+    # that no longer exists on the host.
     remove_orphans: true
 
-- name: Применить отложенный перезапуск Postal
+- name: Apply the deferred Postal restart
   ansible.builtin.meta: flush_handlers
 
-# Health-сервер при занятом порте перехватывает EADDRINUSE и просто пишет
-# в лог, поэтому «сервис запустился» и «сервис наблюдаем» — разные факты.
-- name: Проверить, что все health-эндпоинты воркеров отвечают
+# When the port is taken, the health server catches EADDRINUSE and merely writes
+# to the log, so "the service started" and "the service is observable" are different facts.
+- name: Check that all worker health endpoints respond
   ansible.builtin.uri:
     url: "http://{{ svc_ip }}:{{ postal_worker_health_port_base + item }}/health"
     status_code: 200

@@ -1,16 +1,16 @@
 ---
-# Версии коллекций фиксируются: community.docker разбирает вывод Docker Compose CLI,
-# формат которого документирован как нестабильный, и коллекцию уже ломали
-# релизы Compose 2.37.0, Compose 5.0.0 и Docker 29.0.0.
+# Collection versions are pinned: community.docker parses the output of the Docker Compose CLI,
+# whose format is documented as unstable, and the collection has already been broken by
+# the Compose 2.37.0, Compose 5.0.0 and Docker 29.0.0 releases.
 collections:
   - name: community.docker
     version: "5.2.2"
 
-  # Используется для mysql_query при сидировании и сверке.
+  # Used for mysql_query during seeding and verification.
   - name: community.mysql
     version: ">=3.9.0,<4.0.0"
 
-  # sysctl, mount, firewalld-независимые примитивы.
+  # sysctl, mount and other firewalld-independent primitives.
   - name: ansible.posix
     version: ">=1.5.4,<3.0.0"
 

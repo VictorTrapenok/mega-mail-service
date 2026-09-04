@@ -1,16 +1,16 @@
 {{ ansible_managed | comment }}
 #
-# Топология повторяет postalserver/install: три долгоживущих процесса из ОДНОГО
-# образа, различающиеся только аргументом команды, плюс runner для разовых
-# операций. RabbitMQ и процессы cron/requeuer удалены в Postal 3.0 —
-# очередь живёт в MariaDB.
+# The topology mirrors postalserver/install: three long-lived processes from a SINGLE
+# image, differing only in the command argument, plus a runner for one-off
+# operations. RabbitMQ and the cron/requeuer processes were removed in Postal 3.0 —
+# the queue lives in MariaDB.
 #
-# network_mode: host — не оптимизация, а требование: воркер определяет свои
-# исходящие адреса перечислением интерфейсов собственного netns
-# (Socket.ip_address_list) и берёт из очереди только строки, у которых
-# ip_address_id совпал или равен NULL. В bridge-сети он увидит 172.x,
-# не совпадёт ни с одной строкой ip_addresses, и при включённых пулах
-# не обработает ничего — молча, без ошибок и без единой строки в логе.
+# network_mode: host is not an optimisation but a requirement: the worker determines its
+# outbound addresses by enumerating the interfaces of its own netns
+# (Socket.ip_address_list) and only takes rows from the queue whose
+# ip_address_id matched or is NULL. On a bridge network it sees 172.x,
+# matches no row in ip_addresses, and with pools enabled
+# processes nothing — silently, without errors and without a single log line.
 
 name: stand-postal
 
@@ -39,18 +39,18 @@ x-postal-common: &postal-common
     POSTAL_SMTP_HOSTNAME: "{{ postal_smtp_hostname }}"
     POSTAL_USE_IP_POOLS: "{{ postal_use_ip_pools | lower }}"
     POSTAL_BATCH_QUEUED_MESSAGES: "{{ postal_batch_queued_messages | lower }}"
-    # TidyQueuedMessagesTask УНИЧТОЖАЕТ сообщения с устаревшим локом,
-    # а не переоткрывает их. Ставим заведомо больше длительности прогона.
+    # TidyQueuedMessagesTask DESTROYS messages with a stale lock
+    # instead of reopening them. We set a value knowingly larger than the run duration.
     POSTAL_QUEUED_MESSAGE_LOCK_STALE_DAYS: "{{ postal_queued_message_lock_stale_days }}"
-    # По умолчанию false, и тогда Postal сначала резолвит NS домена,
-    # что на .test не работает и молча ломает верификацию.
+    # Defaults to false, in which case Postal first resolves the domain's NS,
+    # which does not work in .test and silently breaks verification.
     POSTAL_USE_LOCAL_NS_FOR_DOMAIN_VERIFICATION: "{{ postal_use_local_ns_for_domain_verification | lower }}"
 {% if postal_smtp_relays %}
     POSTAL_SMTP_RELAYS: "{{ postal_smtp_relays | join(',') }}"
 {% endif %}
 
-    # Резолвер стенда. Хостовой /etc/resolv.conf не трогаем: при host-сети
-    # Postal унаследовал бы systemd-resolved на 127.0.0.53.
+    # The bench resolver. We do not touch the host's /etc/resolv.conf: with host
+    # networking Postal would inherit systemd-resolved on 127.0.0.53.
     DNS_RESOLV_CONF_PATH: "/etc/postal-resolv.conf"
     DNS_TIMEOUT: "{{ postal_dns.timeout }}"
     DNS_HELO_HOSTNAME: "{{ postal_dns.helo_hostname }}"
@@ -67,11 +67,11 @@ x-postal-common: &postal-common
 
 services:
 {% if inventory_hostname in (groups['postal_web'] | default([])) %}
-{# Реплик приёма несколько, потому что у MRI Ruby есть GVL: один процесс Puma
-   не выполняет CPU-bound работу — сборку multipart, quoted-printable, подпись
-   DKIM — больше чем на одном ядре. Измерение это подтверждает: web упирался
-   ровно в 92.5 % при лимите 1.0 CPU. Приём масштабируется процессами,
-   а не потоками, и добавление ядер одному процессу ничего не даёт. #}
+{# There is more than one ingress replica because MRI Ruby has a GVL: a single Puma
+   process does not perform CPU-bound work — building multipart, quoted-printable, DKIM
+   signing — on more than one core. The measurement confirms it: web topped out at
+   exactly 92.5 % under a 1.0 CPU limit. Ingress scales by processes,
+   not by threads, and giving one process more cores achieves nothing. #}
 {% for i in range(postal_web_replicas | int) %}
   web{{ i + 1 }}:
     <<: *postal-common
@@ -79,15 +79,15 @@ services:
     command: ["postal", "web-server"]
     environment:
       <<: *postal-env
-      # Дефолт — 127.0.0.1, и при host-сети web оказался бы доступен
-      # только локально.
+      # The default is 127.0.0.1, and with host networking web would be reachable
+      # only locally.
       WEB_SERVER_DEFAULT_BIND_ADDRESS: "0.0.0.0"
       WEB_SERVER_DEFAULT_PORT: "{{ postal_web_port + i }}"
       WEB_SERVER_MAX_THREADS: "{{ postal_web_max_threads }}"
     healthcheck:
-      # До postal initialize таблиц ещё нет, поэтому /login закономерно
-      # отдаёт 500. Здесь проверяем только, что Puma слушает порт; HTTP-путь
-      # проверяется после инициализации схемы.
+      # Before postal initialize there are no tables yet, so /login predictably
+      # returns 500. Here we only check that Puma is listening on the port; the HTTP path
+      # is checked after the schema is initialised.
       test: ["CMD", "ruby", "-e", "require 'socket'; TCPSocket.new('127.0.0.1', {{ postal_web_port + i }}).close"]
       interval: 15s
       timeout: 5s
@@ -111,8 +111,8 @@ services:
     command: ["postal", "smtp-server"]
     environment:
       <<: *postal-env
-      # Ingress подвинут с 25: MX-запись не несёт порт, поэтому 25 обязан
-      # занимать sink, а генератор наш и пойдёт куда скажут.
+      # Ingress is moved off 25: an MX record does not carry a port, so 25 must be
+      # occupied by the sink, whereas the generator is ours and will go wherever it is told.
       SMTP_SERVER_DEFAULT_PORT: "{{ postal_smtp_port }}"
       SMTP_SERVER_DEFAULT_BIND_ADDRESS: "0.0.0.0"
       SMTP_SERVER_DEFAULT_HEALTH_SERVER_PORT: "{{ postal_smtp_health_port_base }}"
@@ -139,17 +139,17 @@ services:
 {% for i in range(postal_worker_replicas | int) %}
   worker{{ i + 1 }}:
     <<: *postal-common
-    # Уникальное имя хоста обязательно: batchable_messages захватывает строки
-    # по НЕсуффиксированному имени локера, поэтому контейнеры с одинаковым
-    # hostname разбирают чужие батчи и порождают дубликаты доставки.
+    # A unique hostname is mandatory: batchable_messages claims rows
+    # by the UNsuffixed locker name, so containers with the same
+    # hostname pick up each other's batches and produce duplicate deliveries.
     hostname: postal-worker{{ i + 1 }}-{{ inventory_hostname }}
     command: ["postal", "worker"]
     environment:
       <<: *postal-env
       WORKER_THREADS: "{{ postal_worker_threads }}"
-      # Порт на реплику: health-сервер при занятом порте перехватывает
-      # EADDRINUSE и просто пишет в лог, поэтому вторая и последующие реплики
-      # молча остались бы без метрик.
+      # One port per replica: when the port is taken, the health server catches
+      # EADDRINUSE and merely writes to the log, so the second and further replicas
+      # would silently be left without metrics.
       WORKER_DEFAULT_HEALTH_SERVER_PORT: "{{ postal_worker_health_port_base + i }}"
       WORKER_DEFAULT_HEALTH_SERVER_BIND_ADDRESS: "0.0.0.0"
     healthcheck:

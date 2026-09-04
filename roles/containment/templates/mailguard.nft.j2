@@ -1,14 +1,14 @@
 #!/usr/sbin/nft -f
 {{ ansible_managed | comment }}
 
-# Идиома атомарной перезаливки: add создаёт таблицу, если её нет,
-# delete гарантированно её убирает, и дальше она собирается заново.
+# The atomic reload idiom: add creates the table if it does not exist,
+# delete then removes it for sure, and afterwards it is built again from scratch.
 add table inet mailguard
 delete table inet mailguard
 
 table inet mailguard {
-    # Именованный счётчик: smoke-тест утверждает, что он остался нулевым.
-    # Без него «письмо не ушло наружу» — это надежда, а не проверка.
+    # A named counter: the smoke test asserts that it stayed at zero.
+    # Without it, "no message escaped to the outside" is a hope, not a check.
     counter smtp_escape_attempts {}
 
     set stand_hosts {
@@ -20,10 +20,10 @@ table inet mailguard {
         }
     }
 
-    # Трафик контейнеров с network_mode: host — это трафик самого хоста
-    # и проходит через output. Контейнеры на bridge-сети идут через forward.
-    # Нужны обе цепочки: фильтрация только в одной из них — классическая
-    # ошибка, оставляющая дыру ровно в той топологии, которую не проверяли.
+    # The traffic of containers with network_mode: host is the host's own traffic
+    # and goes through output. Containers on a bridge network go through forward.
+    # Both chains are needed: filtering in only one of them is the classic
+    # mistake that leaves a hole in exactly the topology that was not tested.
 
     chain output {
         type filter hook output priority filter; policy accept;

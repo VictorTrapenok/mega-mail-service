@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+#
+# Persistence for the outbound addresses of the IP pool. Without this file the addresses
+# disappear on reboot, and that failure is silent in the worst possible way: the worker
+# only claims queue rows whose ip_address_id matches an address of its own netns, so an
+# absent address means those rows are never processed, never time out and are not even
+# seen by the tidy task. The queue simply stops draining.
+#
+# The primary address is not listed here on purpose — it is handed out by DHCP on the
+# private network, and pinning it statically as well would give the interface two
+# owners for the same address.
+network:
+  version: 2
+  ethernets:
+    {{ postal_sending_iface }}:
+      addresses:
+{% for ip in postal_sending_ips_managed %}
+        - "{{ ip }}/32"
+{% endfor %}

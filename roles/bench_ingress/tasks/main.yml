@@ -1,15 +1,15 @@
 ---
-# Измерение ТОЛЬКО скорости приёма.
+# Measuring ONLY the ingress rate.
 #
-# Воркеры доставки остановлены вызывающим плейбуком, поэтому очередь за время
-# прогона лишь растёт. Это и есть смысл измерения: приём и разбор очереди
-# конкурируют за одни ядра и одну БД, и в комбинированном прогоне невозможно
-# сказать, какая из двух половин не дотягивает до цели.
+# The delivery workers are stopped by the calling playbook, so during the run the queue
+# only grows. That is the whole point of the measurement: ingress and queue draining
+# compete for the same cores and the same DB, and in a combined run it is impossible
+# to tell which of the two halves is falling short of the target.
 #
-# Побочная выгода — очередь, набитая штатным путём: она остаётся входом
-# для измерения дренажа.
+# A side benefit is a queue filled the normal way: it remains the input
+# for the drain measurement.
 
-- name: Прогрев
+- name: Warm-up
   ansible.builtin.command:
     argv: >-
       {{ bench_loadgen_argv + bench_loadgen_cpuset_argv
@@ -20,10 +20,10 @@
   run_once: true
   changed_when: true
 
-# Замер идёт ПОСЛЕ прогрева: письма прогрева тоже остались в очереди, потому что
-# воркеры остановлены, и отсчёт от состояния до прогрева завысил бы прирост
-# на всю его длительность.
-- name: Замерить длину очереди перед окном
+# The measurement is taken AFTER the warm-up: the warm-up messages also stayed in the queue,
+# because the workers are stopped, and counting from the state before the warm-up would
+# overstate the increment by its whole duration.
+- name: Measure the queue length before the window
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -36,9 +36,9 @@
   delegate_to: "{{ groups['postal_main_db'] | first }}"
   run_once: true
 
-# Время берётся живыми часами хоста основной БД, а не из ansible_date_time:
-# тот факт снимается один раз при сборе фактов и в течение плея не меняется.
-- name: Отметить начало окна
+# The time is taken from a live clock on the main DB host rather than from ansible_date_time:
+# that fact is captured once during fact gathering and does not change during the play.
+- name: Record the start of the window
   ansible.builtin.command:
     argv: [date, -u, +%s]
   delegate_to: "{{ groups['postal_main_db'] | first }}"
@@ -46,7 +46,7 @@
   changed_when: false
   register: ingress_clock_start
 
-- name: Рабочая нагрузка
+- name: Working load
   ansible.builtin.command:
     argv: >-
       {{ bench_loadgen_argv + bench_loadgen_cpuset_argv
@@ -57,7 +57,7 @@
   run_once: true
   changed_when: true
 
-- name: Отметить конец окна
+- name: Record the end of the window
   ansible.builtin.command:
     argv: [date, -u, +%s]
   delegate_to: "{{ groups['postal_main_db'] | first }}"
@@ -65,7 +65,7 @@
   changed_when: false
   register: ingress_clock_end
 
-- name: Замерить длину очереди после нагрузки
+- name: Measure the queue length after the load
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -78,7 +78,7 @@
   delegate_to: "{{ groups['postal_main_db'] | first }}"
   run_once: true
 
-- name: Зафиксировать итоги приёма
+- name: Pin the ingress results
   ansible.builtin.set_fact:
     bench_ingress_window_start: "{{ ingress_clock_start.stdout | trim }}"
     bench_ingress_window_end: "{{ ingress_clock_end.stdout | trim }}"
@@ -86,7 +86,7 @@
     bench_ingress_queue_after: "{{ ingress_queue_after.query_result[0][0].n | int }}"
   run_once: true
 
-- name: Забрать сводки генератора
+- name: Fetch the generator summaries
   ansible.builtin.fetch:
     src: "{{ loadgen_results_dir }}/{{ bench_run_id }}-{{ item }}-summary.json"
     dest: "{{ bench_reports_dir }}/{{ bench_run_id }}/"

@@ -1,12 +1,12 @@
 ---
-# Балансировщик HTTP API перед процессами приёма.
+# The HTTP API load balancer in front of the ingress processes.
 #
-# Нужен потому, что приём масштабируется процессами, а не потоками: у MRI Ruby
-# есть GVL, и один процесс Puma не выполняет счётную работу больше чем
-# на одном ядре. Обращение к первому процессу из нескольких измеряло бы один
-# процесс вместо системы.
+# It is needed because ingress scales by processes, not by threads: MRI Ruby
+# has a GVL, and a single Puma process does not perform compute work on more than
+# one core. Talking to the first of several processes would measure one
+# process instead of the system.
 
-- name: Создать каталог балансировщика
+- name: Create the load balancer directory
   ansible.builtin.file:
     path: "{{ postal_lb_dir }}"
     state: directory
@@ -14,37 +14,37 @@
     group: root
     mode: "0755"
 
-- name: Развернуть конфигурацию HAProxy
+- name: Deploy the HAProxy configuration
   ansible.builtin.template:
     src: haproxy.cfg.j2
     dest: "{{ postal_lb_dir }}/haproxy.cfg"
     owner: root
     group: root
     mode: "0644"
-  notify: Перезапустить балансировщик
+  notify: Restart the load balancer
 
-- name: Развернуть compose-файл балансировщика
+- name: Deploy the load balancer compose file
   ansible.builtin.template:
     src: docker-compose.yml.j2
     dest: "{{ postal_lb_dir }}/docker-compose.yml"
     owner: root
     group: root
     mode: "0644"
-  notify: Перезапустить балансировщик
+  notify: Restart the load balancer
 
-- name: Запустить балансировщик
+- name: Start the load balancer
   community.docker.docker_compose_v2:
     project_src: "{{ postal_lb_dir }}"
     state: present
     wait: true
 
-- name: Применить отложенный перезапуск балансировщика
+- name: Apply the deferred load balancer restart
   ansible.builtin.meta: flush_handlers
 
-# Балансировщик, поднявшийся с пустым или неполным набором процессов приёма,
-# выглядел бы работающим, а прогон измерял бы меньше процессов, чем записано
-# в отчёте. Поэтому проверяется не факт запуска, а число живых бэкендов.
-- name: Дождаться готовности бэкендов приёма
+# A balancer that came up with an empty or incomplete set of ingress processes
+# would look like it is working, while the run would measure fewer processes than the
+# report records. Hence we check the number of live backends, not the fact that it started.
+- name: Wait for the ingress backends to become ready
   ansible.builtin.uri:
     url: "http://{{ svc_ip }}:{{ postal_lb_stats_port }}/;csv"
     return_content: true

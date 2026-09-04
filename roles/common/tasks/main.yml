@@ -1,42 +1,42 @@
 ---
-- name: Проверить, что ОС поддерживается
+- name: Check that the OS is supported
   ansible.builtin.assert:
     that:
       - ansible_facts.distribution == "Ubuntu"
       - ansible_facts.distribution_version is version("24.04", ">=")
     fail_msg: >-
-      Стенд рассчитан на Ubuntu 24.04 LTS,
-      обнаружено {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}.
+      The bench targets Ubuntu 24.04 LTS,
+      found {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}.
 
-- name: Установить базовые пакеты
+- name: Install base packages
   ansible.builtin.apt:
     name: "{{ common_packages }}"
     state: present
     update_cache: true
     cache_valid_time: 3600
 
-# Все отметки времени в отчётах — UTC. Иначе смена часового пояса между
-# прогонами превращается в необъяснимый сдвиг в сверке.
-- name: Установить часовой пояс UTC
+# All timestamps in the reports are UTC. Otherwise a timezone change between
+# runs turns into an unexplainable shift in the reconciliation.
+- name: Set the timezone to UTC
   community.general.timezone:
     name: Etc/UTC
 
-- name: Настроить chrony
+- name: Configure chrony
   ansible.builtin.template:
     src: chrony.conf.j2
     dest: /etc/chrony/chrony.conf
     owner: root
     group: root
     mode: "0644"
-  notify: Перезапустить chrony
+  notify: Restart chrony
 
-- name: Включить chrony
+- name: Enable chrony
   ansible.builtin.systemd:
     name: chrony
     state: started
     enabled: true
 
-- name: Применить сетевые sysctl
+- name: Apply the network sysctls
   ansible.posix.sysctl:
     name: "{{ item.key }}"
     value: "{{ item.value }}"
@@ -47,7 +47,7 @@
   loop_control:
     label: "{{ item.key }}"
 
-- name: Поднять лимит файловых дескрипторов
+- name: Raise the file descriptor limit
   ansible.builtin.copy:
     dest: /etc/security/limits.d/99-postal-bench.conf
     owner: root
@@ -57,7 +57,7 @@
       * soft nofile 1048576
       * hard nofile 1048576
 
-- name: Создать каталог артефактов стенда
+- name: Create the bench artifacts directory
   ansible.builtin.file:
     path: /opt/postal-bench
     state: directory

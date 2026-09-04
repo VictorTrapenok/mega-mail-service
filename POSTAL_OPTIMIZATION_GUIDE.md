@@ -1,80 +1,115 @@
 # Postal Performance Optimization Guide
 
-## Назначение документа
+## Purpose of this document
 
-Этот документ фиксирует исходные требования, подтверждённые особенности Postal, правила нагрузочного тестирования и рекомендуемую последовательность оптимизации. Его следует поддерживать вместе с кодом и обновлять после каждого подтверждённого измерения или архитектурного решения.
+This document records the original requirements, the confirmed characteristics of Postal, the rules for load testing and the recommended optimisation sequence. It should be maintained alongside the code and updated after every confirmed measurement or architectural decision.
 
-Документ не является обещанием конкретной производительности. Любое утверждение о bottleneck или приросте должно подтверждаться воспроизводимым тестом.
+The document is not a promise of any particular level of performance. Any claim about a bottleneck or a gain must be backed by a reproducible test.
 
-## Главные инженерные правила
+## Core engineering rules
 
-1. Считать нагрузку в **получателях**, а не только в SMTP-сессиях, API-запросах или письмах кампании.
-2. Не оптимизировать по предположениям: сначала воспроизвести baseline, затем профилировать.
-3. Менять за один эксперимент одну существенную переменную.
-4. Сравнивать сборки на одинаковых CPU/RAM limits, данных и конфигурации.
-5. Не считать скорость локального SMTP sink скоростью реальной интернет-доставки.
-6. Любая оптимизация должна сохранять учёт состояний, retries, bounces и причины ошибок.
-7. Производительность без корректности, backpressure и управляемого rollback не считается результатом.
-8. Сначала сохранять совместимость с существующим форком Postal; компоненты заменять постепенно.
-9. Не переносить Ruby-код на другой язык целиком без доказательства, что именно этот контур ограничивает производительность.
-10. Измерять не только throughput, но и стоимость обработки одного миллиона получателей.
+1. Count load in **recipients**, not only in SMTP sessions, API requests or campaign messages.
+2. Do not optimise based on assumptions: first reproduce the baseline, then profile.
+3. Change one significant variable per experiment.
+4. Compare builds under identical CPU/RAM limits, data and configuration.
+5. Do not treat the speed of a local SMTP sink as the speed of real internet delivery.
+6. Any optimisation must preserve state tracking, retries, bounces and error reasons.
+7. Performance without correctness, backpressure and a controlled rollback does not count as a result.
+8. Preserve compatibility with the existing Postal fork first; replace components gradually.
+9. Do not port the Ruby code to another language wholesale without proving that this particular path is what limits performance.
+10. Measure not only throughput but also the cost of processing one million recipients.
 
-## Известные требования заказчика
+## Known customer requirements
 
-Следующие пункты получены из переписки и пока считаются требованиями или исходными данными заказчика, а не результатами независимого измерения:
+The following points come from correspondence and are for now treated as the customer's requirements or input data, not as the results of independent measurement:
 
-- Система используется для массовых промо-кампаний клиентов.
-- Полноценная multi-tenant-модель для нового data plane не требуется.
-- Нужно хранить состояние каждого получателя: отправлен, не отправлен, отложен, окончательно отклонён и причина.
-- IP mapping, IP pools/rotation и создание SMTP servers являются критически важными функциями.
-- Существующий продукт — модифицированный форк Postal с дополнительными функциями.
-- Текущая архитектура преимущественно масштабируется вертикально.
-- Главной предполагаемой проблемой заказчик называет скорость Ruby workers; роль MariaDB пока не доказана.
-- Требуется минимум 5 млн отправлений в сутки и возможность дальнейшего роста.
-- Go запрещён заказчиком. Для новых компонентов допустимы Ruby, Rust или C++.
-- Желательно сохранить существующий Postal и заменять bottleneck-компоненты поверх него.
-- Инфраструктурная стоимость должна стать отдельным KPI оптимизации.
+- The system is used for mass promotional campaigns for clients.
+- A full multi-tenant model for the new data plane is not required.
+- The state of every recipient must be stored: sent, not sent, deferred, finally rejected, and the reason.
+- IP mapping, IP pools/rotation and the creation of SMTP servers are critically important features.
+- The existing product is a modified Postal fork with additional features.
+- The current architecture scales predominantly vertically.
+- The customer names the speed of the Ruby workers as the main suspected problem; the role of MariaDB has not been proven yet.
+- A minimum of 5 million sends per day is required, with room for further growth.
+- Go is forbidden by the customer. Ruby, Rust or C++ are acceptable for new components.
+- It is desirable to keep the existing Postal and replace bottleneck components on top of it.
+- Infrastructure cost must become a separate optimisation KPI.
 
-## Противоречия и неизвестные данные
+## Contradictions and unknown data
 
-До фиксации production SLO необходимо разрешить следующие вопросы:
+The following questions must be resolved before the production SLO is pinned down:
 
-- В переписке встречаются разные текущие пределы: «несколько миллионов, но меньше 5 млн» и «не больше 1 млн за 24 часа».
-- Не определено, являются ли эти числа сообщениями, уникальными MIME-объектами или получателями.
-- Неизвестна продолжительность окна отправки. Пять миллионов за сутки и за два часа — разные задачи.
-- Неизвестно, где измерен предел: приём Postal, рост очереди, попытки соединения или подтверждённые ответы удалённых MX.
-- Неизвестны текущая топология, параметры MariaDB, число workers, sending IP и фактический месячный расход.
-- Неизвестен diff клиентского форка относительно upstream Postal.
-- Предыдущая реализация на Go достигала 5 млн, но была отклонена из-за других проблем. До новой реализации нужен её код или postmortem.
-- Не определены feature mix, retention и объём хранимой истории.
+- The correspondence quotes different current limits: "several million, but fewer than 5 million" and "no more than 1 million in 24 hours".
+- It is not defined whether these numbers are messages, unique MIME objects or recipients.
+- The duration of the sending window is unknown. Five million per day and five million in two hours are different problems.
+- It is unknown where the limit was measured: Postal ingress, queue growth, connection attempts, or confirmed responses from remote MX hosts.
+- The current topology, the MariaDB settings, the number of workers, the sending IPs and the actual monthly spend are unknown.
+- The diff of the client's fork against upstream Postal is unknown.
+- A previous implementation in Go reached 5 million but was rejected because of other problems. Its code or a postmortem is needed before a new implementation.
+- The feature mix, the retention and the volume of stored history are not defined.
 
-Не начинать крупную замену worker до получения хотя бы частичных ответов на эти вопросы.
+Do not start a major replacement of the worker before at least partial answers to these questions are obtained.
 
-## Масштаб целевой нагрузки
+## The scale of the target load
 
-Пять миллионов получателей соответствуют следующей минимальной средней скорости:
+Five million recipients correspond to the following minimum average rates:
 
-| Окно отправки |   Средняя скорость |
-| ------------: | -----------------: |
-|       24 часа |    58 recipients/s |
-|       8 часов |   174 recipients/s |
-|        4 часа |   347 recipients/s |
-|        2 часа |   694 recipients/s |
-|         1 час | 1 389 recipients/s |
+| Sending window |     Average rate |
+| -------------: | ---------------: |
+|       24 hours |  58 recipients/s |
+|        8 hours | 174 recipients/s |
+|        4 hours | 347 recipients/s |
+|        2 hours | 694 recipients/s |
+|         1 hour | 1,389 recipients/s |
 
-Это только среднее арифметическое. Реальная система должна выдерживать согласованный burst, retries и backlog drain. Проектный target нельзя выводить только из `5M / 24h`.
+This is the arithmetic mean only. A real system must withstand an agreed burst, retries and backlog drain. The design target cannot be derived from `5M / 24h` alone.
 
-При среднем MIME 100 KB пять миллионов отдельных копий означают около 500 GB raw data в сутки до учёта индексов, deliveries, репликации и резервных копий. Retention и модель хранения MIME влияют на архитектуру не меньше CPU.
+At an average MIME of 100 KB, five million separate copies mean about 500 GB of raw data per day before accounting for indexes, deliveries, replication and backups. Retention and the MIME storage model affect the architecture no less than CPU does.
 
-## Upstream Postal: подтверждённая структура
+## Measured findings on the 2-vCPU bench
 
-Для Postal 3.x runtime состоит из трёх основных процессов:
+These are results, not hypotheses. Profile: MIME 100 KB multipart, 1 recipient per message,
+1000 destination domains, no retries, no tracking or webhooks, upstream Postal 3.3.7.
 
-- `postal web-server` — Web UI и HTTP API;
+**Ingress and draining are limited by entirely different things, and mixing them hides both.**
+
+| What | Rate | Limiter |
+|---|---|---|
+| Ingress, 1 web process | ~28/s | one core: MRI's GVL, a single Puma process |
+| Ingress, 2 web processes | 56.7/s | scales by processes, ×1.98 |
+| Draining, instant sink | 48.5/s | worker CPU |
+| Draining, 75 ms sink delay | 7.1/s | **waiting on the network, CPU idle at 20 %** |
+| Draining, delay + concurrency 32 | 51.3/s | approaching the machine's CPU ceiling |
+
+Three conclusions that change the optimisation priorities:
+
+1. **Ingress scales by processes, not threads.** The GVL prevents a single Puma process from
+   doing compute work on more than one core, so adding cores to one process achieves nothing.
+   Measured: 92.5 % under a 1.0 CPU limit, and ×1.98 from a second replica.
+2. **Draining is not a compute task.** Its ceiling equals concurrency divided by the delivery
+   latency. With a realistic sink delay the worker spends about 90 % of its time waiting, and
+   its CPU sits at a fifth of the limit. Adding cores or nodes in that state changes almost
+   nothing — raising the number of concurrent sessions does.
+3. **Concurrency scales almost linearly**: eight times the concurrency gave 7.2 times the rate,
+   reaching 51.3 recipients/s — 4.43M messages per day — on two cores. Whatever ceiling a
+   production system reports at 1M/day, it is not a property of Postal at this scale.
+
+A sink that answers instantly overstates draining roughly sevenfold. Any figure obtained
+without a sink delay is an upper bound and must not be quoted as a production forecast.
+
+The cost per message on clean runs: **25 ms of CPU for ingress including the DB, 32–35 ms for
+draining**. At 58 recipients/s that is about 3.5 cores of continuous load — the sizing is
+driven by required concurrency and by storage, not by processor power.
+
+## Upstream Postal: confirmed structure
+
+For Postal 3.x the runtime consists of three main processes:
+
+- `postal web-server` — the Web UI and the HTTP API;
 - `postal smtp-server` — SMTP ingress;
-- `postal worker` — фоновые задачи и доставка.
+- `postal worker` — background jobs and delivery.
 
-Команды `cron` и `requeuer`, а также зависимость от RabbitMQ были удалены в Postal 3.0. Очередь и координация фоновой обработки находятся в MariaDB.
+The `cron` and `requeuer` commands, as well as the RabbitMQ dependency, were removed in Postal 3.0. The queue and the coordination of background processing live in MariaDB.
 
 ```mermaid
 flowchart TD
@@ -85,43 +120,43 @@ flowchart TD
     W --> E["Events, webhooks, tracking"]
 ```
 
-Postal позволяет запускать несколько web, SMTP и worker-инстансов. Однако они используют общие main/message databases, поэтому добавление процессов не гарантирует линейного масштабирования.
+Postal allows running several web, SMTP and worker instances. However, they use shared main/message databases, so adding processes does not guarantee linear scaling.
 
-## Подтверждённые точки возможного bottleneck
+## Confirmed candidate bottlenecks
 
-### 1. Синхронный путь SMTP acceptance
+### 1. The synchronous SMTP acceptance path
 
-SMTP server сохраняет каждое сообщение и ставит его в очередь до ответа `250 OK`. Скорость и latency MariaDB непосредственно влияют на приём SMTP.
+The SMTP server stores every message and enqueues it before answering `250 OK`. The speed and latency of MariaDB directly affect SMTP reception.
 
-Следствия:
+Consequences:
 
-- ingress benchmark должен отдельно измерять latency до `250`;
-- увеличение SMTP replicas может помочь только до насыщения общей DB;
-- большие сообщения и медленное хранилище могут задерживать другие операции;
-- перед изменением ingress необходимо измерить CPU, allocation rate, DB latency и размер `DATA` в памяти.
+- the ingress benchmark must measure the latency to `250` separately;
+- increasing the number of SMTP replicas can only help up to the saturation of the shared DB;
+- large messages and slow storage can delay other operations;
+- before changing ingress, measure CPU, allocation rate, DB latency and the size of `DATA` held in memory.
 
-### 2. Отдельное сообщение на каждого получателя
+### 2. A separate message per recipient
 
-HTTP/SMTP path создаёт отдельный message для каждого recipient. При сохранении каждого message отдельно сохраняются raw headers/body, metadata, statistics и queue entry.
+The HTTP/SMTP path creates a separate message for each recipient. When each message is stored, the raw headers/body, metadata, statistics and a queue entry are stored separately.
 
-Следствия:
+Consequences:
 
-- одно письмо на 50 получателей нельзя считать одной единицей нагрузки;
-- raw MIME может многократно дублироваться;
-- оптимальная будущая модель — один immutable MIME object и отдельные recipient envelopes;
-- миграция этой модели затрагивает UI, tracking, retention и поиск, поэтому должна выполняться через совместимый adapter.
+- a message to 50 recipients cannot be counted as one unit of load;
+- the raw MIME may be duplicated many times over;
+- the optimal future model is one immutable MIME object plus separate recipient envelopes;
+- migrating to this model affects the UI, tracking, retention and search, so it must be done through a compatible adapter.
 
-### 3. DB-backed queue
+### 3. The DB-backed queue
 
-Worker ищет сообщения по `ip_address_id`, lock-полям и `retry_after`, блокирует запись через `UPDATE ... LIMIT 1`, а затем может добавить до 100 сообщений с тем же `batch_key`.
+The worker looks for messages by `ip_address_id`, the lock fields and `retry_after`, locks a row via `UPDATE ... LIMIT 1`, and can then add up to 100 messages with the same `batch_key`.
 
-В upstream schema таблица `queued_messages` имеет отдельные индексы только на:
+In the upstream schema the `queued_messages` table has separate indexes only on:
 
 - `domain`;
 - `message_id`;
 - `server_id`.
 
-При этом hot queries используют также:
+Meanwhile the hot queries also use:
 
 - `ip_address_id`;
 - `locked_by`;
@@ -129,457 +164,457 @@ Worker ищет сообщения по `ip_address_id`, lock-полям и `ret
 - `retry_after`;
 - `batch_key`.
 
-Это является гипотезой о неэффективном плане запроса, но не разрешением сразу добавить случайный индекс. Сначала обязательны реальные `EXPLAIN/ANALYZE`, slow query log, lock waits и тесты на production-like размере очереди. В клиентском форке индексы уже могли быть изменены.
+This is a hypothesis about an inefficient query plan, not permission to immediately add an arbitrary index. Real `EXPLAIN/ANALYZE`, a slow query log, lock waits and tests at a production-like queue size are required first. The indexes may already have been changed in the client's fork.
 
-### 4. Горячие статистические записи
+### 4. Hot statistics writes
 
-При создании message обновляются message statistics и глобальные totals. При высокой конкуренции такие счётчики могут создавать row-lock contention и дополнительный write amplification.
+When a message is created, message statistics and global totals are updated. Under high concurrency such counters can create row-lock contention and additional write amplification.
 
-Кандидат на изменение: записывать immutable delivery events, а агрегаты считать асинхронно и идемпотентно. Нельзя просто удалить статистику, если UI или отчёты клиента зависят от неё.
+A candidate change: write immutable delivery events and compute the aggregates asynchronously and idempotently. Statistics cannot simply be deleted if the client's UI or reports depend on them.
 
-### 5. Sending IP привязан к worker host
+### 5. The sending IP is bound to the worker host
 
-Worker получает список IP локальных интерфейсов ОС и выбирает сообщения без конкретного IP либо с `ip_address_id`, присутствующим на текущем host.
+The worker obtains the list of IPs of the OS's local interfaces and selects messages with no specific IP, or with an `ip_address_id` present on the current host.
 
-Следствия:
+Consequences:
 
-- scheduler обязан знать, на каком узле реально доступен sending IP;
-- неправильное размещение worker оставляет часть очереди без исполнителя;
-- containers могут требовать host networking или явного назначения адресов;
-- failover sending IP должен включать сетевое перемещение IP, маршрутизацию и обновление scheduler state;
-- IP rotation нельзя реализовывать как случайный выбор адреса без учёта репутации и throttling.
+- the scheduler must know on which node a sending IP is actually available;
+- misplacing a worker leaves part of the queue with no executor;
+- containers may require host networking or explicit address assignment;
+- sending IP failover must include moving the IP on the network, routing and updating the scheduler state;
+- IP rotation must not be implemented as a random choice of address, without regard to reputation and throttling.
 
-### 6. Конфигурация DB и workers
+### 6. DB and worker configuration
 
-Upstream поддерживает отдельные `main_db` и `message_db`. По умолчанию worker использует два потока, а main DB pool имеет небольшой default. Эти значения являются исходной точкой, а не рекомендацией для production.
+Upstream supports separate `main_db` and `message_db`. By default the worker uses two threads, and the main DB pool has a small default. These values are a starting point, not a production recommendation.
 
-Рост worker threads необходимо сопоставлять с:
+Increasing worker threads must be matched against:
 
-- размером DB pool;
-- числом DB connections;
+- the DB pool size;
+- the number of DB connections;
 - row locks;
-- CPU Ruby processes;
-- concurrency удалённых SMTP-соединений;
-- памятью на in-flight MIME.
+- the CPU of the Ruby processes;
+- the concurrency of remote SMTP connections;
+- the memory used by in-flight MIME.
 
-Не запускать тысячи worker threads только потому, что сервер имеет много CPU.
+Do not launch thousands of worker threads simply because the server has many CPUs.
 
-## Сначала изучить клиентский форк
+## Study the client's fork first
 
-Перед первой оптимизацией сохранить следующие артефакты:
+Before the first optimisation, capture the following artifacts:
 
-1. Точный upstream base commit.
-2. Полный diff форка.
-3. Список изменённых DB migrations и индексов.
-4. Изменения queue claiming, batching, retries и statistics.
-5. Реализацию IP mapping и создания SMTP servers.
-6. Custom features и их использование в production.
-7. Текущие Docker images, конфигурацию и параметры запуска.
-8. Существующие метрики, dashboards и инциденты.
-9. Код и postmortem предыдущего Go-прототипа.
+1. The exact upstream base commit.
+2. The full diff of the fork.
+3. A list of modified DB migrations and indexes.
+4. Changes to queue claiming, batching, retries and statistics.
+5. The implementation of IP mapping and SMTP server creation.
+6. The custom features and their use in production.
+7. The current Docker images, configuration and startup parameters.
+8. The existing metrics, dashboards and incidents.
+9. The code and postmortem of the previous Go prototype.
 
-Особое внимание уделить изменениям, которые могли нарушить batching, connection reuse или локальность sending IP. Нельзя считать upstream Postal точным отражением production-форка клиента.
+Pay particular attention to changes that may have broken batching, connection reuse or the locality of the sending IP. Upstream Postal must not be treated as an accurate reflection of the client's production fork.
 
-## Термины и единицы измерения
+## Terms and units of measurement
 
-Во всех отчётах явно указывать:
+All reports must state explicitly:
 
-- `messages` — уникальные логические письма/MIME;
-- `recipients` — отдельные адресаты и delivery state;
-- `accepted` — Postal ответил SMTP `250` или успешным HTTP response;
-- `attempted` — worker начал SMTP delivery attempt;
-- `delivered` — следующий SMTP server ответил успешным кодом;
-- `deferred` — временная ошибка, ожидается retry;
-- `failed` — окончательная ошибка;
-- `inbox placement` — письмо реально попало во входящие, что не эквивалентно SMTP `250`.
+- `messages` — unique logical letters/MIME;
+- `recipients` — individual addressees and their delivery state;
+- `accepted` — Postal answered with an SMTP `250` or a successful HTTP response;
+- `attempted` — the worker started an SMTP delivery attempt;
+- `delivered` — the next SMTP server answered with a success code;
+- `deferred` — a temporary error, a retry is expected;
+- `failed` — a final error;
+- `inbox placement` — the message actually landed in the inbox, which is not equivalent to an SMTP `250`.
 
-Главная throughput-метрика data plane — `recipients/s`.
+The main throughput metric of the data plane is `recipients/s`.
 
-## Обязательные показатели benchmark
+## Mandatory benchmark indicators
 
-### Производительность
+### Performance
 
-- максимальный устойчивый accepted recipients/s;
-- максимальный устойчивый delivered-to-sink recipients/s;
-- p50/p95/p99 latency до SMTP `250` или HTTP response;
+- maximum sustained accepted recipients/s;
+- maximum sustained delivered-to-sink recipients/s;
+- p50/p95/p99 latency to the SMTP `250` or HTTP response;
 - p50/p95/p99 queue latency;
 - backlog growth rate;
-- время drain после burst;
-- delivery attempts/s и retry rate.
+- drain time after a burst;
+- delivery attempts/s and the retry rate.
 
-### Эффективность
+### Efficiency
 
-- CPU-seconds на 1 млн recipients;
+- CPU-seconds per 1 million recipients;
 - RAM high-water mark;
-- DB queries и DB time на recipient;
-- DB rows written на recipient;
-- disk bytes/IOPS на recipient;
-- network bytes на recipient;
-- стоимость инфраструктуры на 1 млн recipients.
+- DB queries and DB time per recipient;
+- DB rows written per recipient;
+- disk bytes/IOPS per recipient;
+- network bytes per recipient;
+- infrastructure cost per 1 million recipients.
 
-### Корректность
+### Correctness
 
 - lost messages;
 - unexpected duplicates;
 - invalid state transitions;
-- несоответствие accepted/delivered/failed/queued;
-- неправильный sending IP;
-- потерянные или повторные webhooks;
-- некорректные retry intervals.
+- a mismatch between accepted/delivered/failed/queued;
+- an incorrect sending IP;
+- lost or repeated webhooks;
+- incorrect retry intervals.
 
-Базовый reconciliation-инвариант после полного drain:
+The basic reconciliation invariant after a full drain:
 
 ```text
 accepted_recipients = delivered + terminal_failed + suppressed + cancelled
 ```
 
-Во время выполнения теста:
+While the test is running:
 
 ```text
 accepted_recipients = delivered + terminal_failed + suppressed + cancelled + queued + in_flight
 ```
 
-Все исключения должны быть объяснены и отражены в отчёте.
+Every exception must be explained and reflected in the report.
 
-## Раздельные измерения приёма и разбора очереди
+## Separate measurement of ingress and queue draining
 
-Комбинированный прогон даёт одно число, в котором смешаны две разные величины.
-Приём и доставка конкурируют за одни ядра и одну БД, а очередь между ними
-работает буфером: пока она растёт, приём принимает быстрее, чем доставка успевает
-отдать, и деление принятого на длину окна выдаёт задел за выполненную работу.
+A combined run yields a single number that mixes two different quantities.
+Ingress and delivery compete for the same cores and the same DB, while the queue between them
+acts as a buffer: while it grows, ingress accepts faster than delivery manages
+to hand off, and dividing what was accepted by the window length passes a backlog off as completed work.
 
-Пример из первого прогона стенда: принято 8984 получателя за 180 с окна, то есть
-49.9 rcpt/s по приёму, но очередь при этом выросла до 5701 строки и разбиралась
-после остановки нагрузки ещё 231 с. Устойчивая величина — 8984 / (180 + 231) =
-**21.9 rcpt/s**, то есть меньше половины. Публиковать первое число как
-пропускную способность нельзя.
+An example from the first run on the bench: 8984 recipients accepted over a 180 s window, i.e.
+49.9 rcpt/s of ingress, but the queue grew to 5701 rows and took a further 231 s to drain
+after the load stopped. The sustained figure is 8984 / (180 + 231) =
+**21.9 rcpt/s**, i.e. less than half. The first number must not be published as
+throughput.
 
-Отсюда три обязательных правила:
+Three mandatory rules follow:
 
-1. **Заголовочная метрика комбинированного прогона — устойчивая пропускная
-   способность**: доставлено за всё время, включая дренаж. Скорость приёма
-   приводится рядом, и разница между ними показывает, насколько прогон опирался
-   на очередь.
-2. **Приём измеряется при остановленных воркерах** (`playbooks/ingress.yml`).
-   Тогда очередь только растёт, приём не конкурирует с разбором, а прирост
-   очереди обязан совпасть с принятым — это встроенная сверка.
-3. **Разбор измеряется на заранее набитой очереди при молчащем ингрессе**
-   (`playbooks/drain.yml`). Знаменатель скорости известен точно, а не выводится
-   из скорости приёма.
+1. **The headline metric of a combined run is sustained
+   throughput**: what was delivered over the whole time, including the drain. The ingress rate
+   is quoted alongside it, and the difference between them shows how far the run leaned
+   on the queue.
+2. **Ingress is measured with the workers stopped** (`playbooks/ingress.yml`).
+   Then the queue only grows, ingress does not compete with draining, and the growth of the
+   queue must match what was accepted — a built-in reconciliation.
+3. **Draining is measured on a pre-filled queue with ingress silent**
+   (`playbooks/drain.yml`). The denominator of the rate is known exactly rather than being derived
+   from the ingress rate.
 
-Очередь набивается штатным путём — через API при остановленных воркерах.
-Прямой SQL пришлось бы воспроизводить руками строку в `messages`, две
-longblob-строки посуточной raw-таблицы и строку очереди со всеми связями,
-и любая неточность там выглядела бы как результат измерения.
+The queue is filled the normal way — through the API with the workers stopped.
+Raw SQL would have to reproduce by hand a row in `messages`, two
+longblob rows of the per-day raw table and a queue row with all its associations,
+and any inaccuracy there would look like a measurement result.
 
-Длина очереди и кардинальность доменов — главные множители стоимости разбора,
-потому что ни один из двух горячих запросов воркера не покрыт индексом
-(разбор механики — в [docs/postal-internals.md](docs/postal-internals.md)).
-Поэтому меряется серия длин, а не одна точка, и отдельно — состав очереди:
-доля строк с `retry_after` в будущем воспроизводит вырождение, при котором
-запрос захвата перестаёт быть дешёвым.
+The queue length and the domain cardinality are the main multipliers of the cost of draining,
+because neither of the two hot worker queries is covered by an index
+(the mechanics are analysed in [docs/postal-internals.md](docs/postal-internals.md)).
+Hence a series of lengths is measured rather than a single point, and the queue composition
+is measured separately: the share of rows with `retry_after` in the future reproduces the
+degeneration at which the claim query stops being cheap.
 
-## Границы применимости слабого стенда
+## The limits of what a weak bench can answer
 
-Слабое железо годится не для всех вопросов, и путать их нельзя.
+Weak hardware is not suitable for every question, and the two must not be confused.
 
-**Относительный вопрос** — «сборка B быстрее сборки A?» — решается на слабом
-железе, если соблюдён протокол сравнения. Это основная работа проекта.
+**The relative question** — "is build B faster than build A?" — can be answered on weak
+hardware if the comparison protocol is followed. This is the project's main work.
 
-**Абсолютный вопрос** — «выдержим ли 5 млн в сутки?» — на слабом железе
-не решается ни при каком протоколе.
+**The absolute question** — "will we withstand 5 million per day?" — cannot be answered on weak
+hardware under any protocol.
 
-Ключевой приём: на слабом железе меряется не потолок, а **стоимость единицы
-работы**. Потолок в rcpt/s между разным железом не переносится, стоимость
-переносится почти линейно:
+The key technique: on weak hardware you measure not the ceiling but the **cost of a unit of
+work**. A ceiling in rcpt/s does not transfer between different hardware; cost transfers
+almost linearly:
 
-- CPU-секунды на 1000 получателей, отдельно по контейнерам;
-- `SUM_ROWS_EXAMINED / COUNT_STAR` по дайджесту горячих запросов — прямое
-  фальсифицируемое свидетельство полного перебора;
-- SQL-запросов, записанных строк и байт на получателя;
-- аллокации Ruby и время GC на получателя.
+- CPU-seconds per 1000 recipients, broken down by container;
+- `SUM_ROWS_EXAMINED / COUNT_STAR` for the digest of the hot queries — direct
+  falsifiable evidence of a full scan;
+- SQL queries, rows written and bytes per recipient;
+- Ruby allocations and GC time per recipient.
 
-Второе правило: **работать ниже точки перегруза**, на 50–70 % от найденного
-предела. На перегрузе латентность определяется очередью, а не кодом, и сборки
-становятся неразличимы.
+The second rule: **work below the overload point**, at 50–70 % of the discovered
+limit. Under overload, latency is determined by the queue rather than by the code, and builds
+become indistinguishable.
 
-Что на слабом стенде проверить **невозможно**:
+What is **impossible** to check on a weak bench:
 
-| Нельзя | Почему |
+| Not possible | Why |
 |---|---|
-| Абсолютный потолок и цель 5 млн/сутки | 58 rcpt/s на 2 vCPU уже за точкой перегруза |
-| `scaling_efficiency(N)` | 1/2/4 воркера делят те же ядра — кривая измеряет исчерпание ядер, а не масштабируемость архитектуры |
-| Row-lock contention на реальном параллелизме | Глобальная строка `statistics` душит при десятках параллельных транзакций; при конкурентности 2 такого параллелизма нет |
-| Поведение при промахах buffer pool | Прод-соотношение «объём данных / память» не воспроизводимо |
-| Дисковую латентность | Байты записи измеримы, латентность fsync shared-хранилища на NVMe не переносится |
-| Хвост p99 | На перегрузе определяется очередью, а не сборкой |
-| Сетевой предел | При 58 rcpt/s × 100 КБ это 46 Мбит/с и незаметно; при 1389 rcpt/s — 1.1 Гбит/с |
-| Достоверность абсолютных чисел на shared vCPU | Steal time не измеряется: `docker stats` его не отдаёт |
+| The absolute ceiling and the 5M/day target | 58 rcpt/s on 2 vCPU is already past the overload point |
+| `scaling_efficiency(N)` | 1/2/4 workers share the same cores — the curve measures the exhaustion of cores, not the scalability of the architecture |
+| Row-lock contention at realistic parallelism | The global `statistics` row throttles at dozens of concurrent transactions; at concurrency 2 there is no such parallelism |
+| Behaviour under buffer pool misses | The production "data volume / memory" ratio cannot be reproduced |
+| Disk latency | Written bytes are measurable, but the fsync latency of shared NVMe storage does not transfer |
+| The p99 tail | Under overload it is determined by the queue, not by the build |
+| The network limit | At 58 rcpt/s × 100 KB that is 46 Mbit/s and goes unnoticed; at 1389 rcpt/s it is 1.1 Gbit/s |
+| The credibility of absolute numbers on shared vCPU | Steal time is not measured: `docker stats` does not report it |
 
-Последнее лечится частично: чередование `baseline → candidate → baseline`
-и медиана из пяти повторов вычитают шум соседей из **относительного** сравнения.
-Абсолютные числа они не спасают, и для них нужны гарантированные ядра,
-а не большее их количество.
+The last one is partly curable: alternating `baseline → candidate → baseline`
+and taking the median of five repeats subtracts the neighbours' noise from the **relative** comparison.
+It does not rescue absolute numbers, and those require guaranteed cores
+rather than a larger number of them.
 
-## Правильный тестовый контур
+## The correct test environment
 
-Инфраструктура описана отдельно в `postal-benchmark-ansible-task.md`. Основные правила:
+The infrastructure is described separately in `postal-benchmark-ansible-task.md`. The main rules:
 
-- генератор нагрузки размещать отдельно от SUT для финальных измерений;
-- использовать настоящий Postfix с очередью и `discard` transport для happy path;
-- поднимать несколько Postfix только после доказательства, что один стал bottleneck;
-- перед каждым Postal test выполнять direct calibration генератора и Postfix;
-- capacity вспомогательной цепочки должна быть минимум в два раза выше Postal;
-- использовать собственный DNS и домены `.test`;
-- запретить исходящий TCP/25 ко всем адресам, кроме test sinks;
-- сохранять image digest, commit SHA, inventory, resource limits и seed workload вместе с результатом.
+- place the load generator separately from the SUT for final measurements;
+- use a real Postfix with a queue and a `discard` transport for the happy path;
+- deploy several Postfix instances only after proving that one has become the bottleneck;
+- run a direct calibration of the generator and Postfix before every Postal test;
+- the capacity of the auxiliary chain must be at least twice that of Postal;
+- use our own DNS and `.test` domains;
+- forbid outbound TCP/25 to all addresses except the test sinks;
+- store the image digest, the commit SHA, the inventory, the resource limits and the seed workload together with the result.
 
-Postfix с discard проверяет реальный SMTP handshake и queue acceptance, но не моделирует поведение интернета. Для retries нужен дополнительный fault-injection SMTP endpoint с профилями:
+Postfix with discard exercises a real SMTP handshake and queue acceptance, but it does not model the behaviour of the internet. Retries need an additional fault-injection SMTP endpoint with profiles for:
 
 - success `250`;
 - temporary `421/450/451`;
 - permanent `550/551/553`;
-- медленный banner/DATA response;
-- connection reset и timeout;
+- a slow banner/DATA response;
+- connection reset and timeout;
 - TLS success/failure;
-- неоднозначный disconnect после принятия DATA.
+- an ambiguous disconnect after DATA has been accepted.
 
-## Протокол сравнения сборок
+## The build comparison protocol
 
-Для каждого кандидата:
+For each candidate:
 
-1. Восстановить одинаковое состояние БД и очереди.
-2. Проверить healthchecks.
-3. Выполнить direct sink calibration.
-4. Выполнить 3 минуты warm-up.
-5. Выполнить минимум 10–15 минут steady load.
-6. Остановить ingress и измерить drain.
-7. Выполнить reconciliation.
-8. Повторить тест не менее пяти раз.
-9. Использовать медиану и показывать разброс.
-10. Выполнять серии `baseline → candidate → baseline`, чтобы обнаруживать drift хоста.
+1. Restore an identical DB and queue state.
+2. Verify the healthchecks.
+3. Run a direct sink calibration.
+4. Run a 3-minute warm-up.
+5. Run at least 10–15 minutes of steady load.
+6. Stop ingress and measure the drain.
+7. Run the reconciliation.
+8. Repeat the test at least five times.
+9. Use the median and show the spread.
+10. Run `baseline → candidate → baseline` series in order to detect host drift.
 
-Формула throughput improvement:
+The throughput improvement formula:
 
 ```text
 improvement_percent = (candidate_throughput / baseline_throughput - 1) * 100
 ```
 
-Формула эффективности масштабирования:
+The scaling efficiency formula:
 
 ```text
 scaling_efficiency(N) = throughput(N) / (N * throughput(1)) * 100
 ```
 
-Строить две независимые кривые:
+Build two independent curves:
 
-- одинаковые ресурсы, разные сборки — эффективность кода;
-- 1/2/4/8 workers или resource units — потенциал масштабирования.
+- identical resources, different builds — code efficiency;
+- 1/2/4/8 workers or resource units — scaling potential.
 
-На shared VPS не объявлять малый прирост победой, если он сопоставим с межзапусковым разбросом.
+On a shared VPS, do not declare a small gain a win if it is comparable to the run-to-run spread.
 
-Слабое фиксированное железо подходит для сравнения относительного прироста. Финальные выводы о горизонтальном масштабировании необходимо повторить на нескольких изолированных узлах с гарантированными CPU и зафиксированной сетью.
+Weak, fixed hardware is suitable for comparing relative gains. Final conclusions about horizontal scaling must be repeated on several isolated nodes with guaranteed CPUs and a fixed network.
 
-## Матрица workload
+## The workload matrix
 
-Минимальная матрица должна включать:
+The minimum matrix must include:
 
-- MIME: 10 KB, 100 KB, 1 MB; 10 MB только коротким тестом;
-- recipients/message: 1, 10 и 50;
-- destination distribution: один домен, несколько крупных доменов, тысячи доменов;
-- SMTP response: быстрый success, медленный success, temporary fail, permanent fail;
+- MIME: 10 KB, 100 KB, 1 MB; 10 MB only in a short test;
+- recipients/message: 1, 10 and 50;
+- destination distribution: a single domain, several large domains, thousands of domains;
+- SMTP response: fast success, slow success, temporary fail, permanent fail;
 - tracking: off/on;
 - DKIM: off/on;
-- webhooks: off/on и медленный endpoint;
-- spam/virus inspection: согласно production feature mix;
-- burst, steady state и recovery;
-- пустая, средняя и большая очередь.
+- webhooks: off/on and a slow endpoint;
+- spam/virus inspection: according to the production feature mix;
+- burst, steady state and recovery;
+- an empty, a medium and a large queue.
 
-Основной benchmark-профиль должен быть зафиксирован и не меняться между commits. Дополнительные профили не должны подменять основной.
+The primary benchmark profile must be pinned and must not change between commits. Additional profiles must not replace the primary one.
 
-## Инструменты диагностики
+## Diagnostic tooling
 
 ### Ruby/Postal
 
-- CPU flamegraph и sampling profiler;
+- CPU flamegraphs and a sampling profiler;
 - allocation/GC statistics;
-- RSS по процессам;
-- время выполнения worker jobs;
-- latency SMTP commands;
-- количество активных SMTP connections;
-- существующие Prometheus metrics Postal.
+- RSS per process;
+- worker job execution time;
+- SMTP command latency;
+- the number of active SMTP connections;
+- Postal's existing Prometheus metrics.
 
 ### MariaDB
 
-- slow query log и `performance_schema`;
-- `EXPLAIN` для queue claim, batching и message lookup;
-- query latency и rows examined;
+- the slow query log and `performance_schema`;
+- `EXPLAIN` for the queue claim, batching and message lookup;
+- query latency and rows examined;
 - row lock waits/deadlocks;
-- buffer pool hit rate;
-- redo/flush rate;
-- active connections и pool wait;
-- disk latency, IOPS и fsync;
-- размер таблиц и индексов.
+- the buffer pool hit rate;
+- the redo/flush rate;
+- active connections and pool wait;
+- disk latency, IOPS and fsync;
+- the size of the tables and indexes.
 
-### ОС и сеть
+### OS and network
 
-- CPU utilization и steal time;
+- CPU utilization and steal time;
 - context switches;
 - memory pressure/page faults;
 - disk latency/queue depth;
-- TCP connections, retransmits и ephemeral ports;
-- DNS latency/cache hit;
-- network throughput по узлам.
+- TCP connections, retransmits and ephemeral ports;
+- DNS latency/cache hits;
+- network throughput per node.
 
-## Последовательность оптимизации
+## The optimisation sequence
 
-### Этап 0. Воспроизводимый baseline
+### Stage 0. A reproducible baseline
 
-- Развернуть upstream и клиентский fork на одинаковом стенде.
-- Воспроизвести reported limit.
-- Разделить ingress throughput и queue drain throughput.
-- Найти первый насыщенный ресурс.
-- Зафиксировать baseline report в репозитории/CI artifacts.
+- Deploy upstream and the client's fork on an identical bench.
+- Reproduce the reported limit.
+- Separate ingress throughput from queue drain throughput.
+- Find the first saturated resource.
+- Record the baseline report in the repository / CI artifacts.
 
-Переходить дальше только если тест повторяется с приемлемым разбросом.
+Move on only if the test repeats with an acceptable spread.
 
-### Этап 1. Низкорисковые изменения существующего Postal
+### Stage 1. Low-risk changes to the existing Postal
 
-Проверять по одному:
+Verify one at a time:
 
-- планы запросов и обоснованные composite indexes;
-- DB pool и worker thread balance;
-- число Ruby worker processes;
-- MariaDB buffer pool, redo log и NVMe latency;
-- разделение main DB и message DB;
-- batching по destination domain;
-- устранение сетевых/DNS/IPv6 timeouts;
-- отключение действительно неиспользуемых feature paths;
-- уменьшение синхронной статистики без потери данных.
+- query plans and justified composite indexes;
+- the balance between the DB pool and worker threads;
+- the number of Ruby worker processes;
+- the MariaDB buffer pool, the redo log and NVMe latency;
+- separating the main DB and the message DB;
+- batching by destination domain;
+- eliminating network/DNS/IPv6 timeouts;
+- disabling genuinely unused feature paths;
+- reducing synchronous statistics without losing data.
 
-Не ожидать, что простой индекс обязательно даст десятикратный прирост: клиент мог уже выполнить базовые оптимизации.
+Do not expect a simple index to necessarily give a tenfold gain: the client may already have performed the basic optimisations.
 
-### Этап 2. Уменьшение DB write amplification
+### Stage 2. Reducing DB write amplification
 
-Кандидаты:
+Candidates:
 
-- append-only delivery events вместо синхронного обновления агрегатов;
-- асинхронные counters и analytics;
+- append-only delivery events instead of synchronously updating aggregates;
+- asynchronous counters and analytics;
 - bulk writes;
-- отдельная очередь webhooks;
-- более эффективный queue claim;
-- partitioning/retention таблиц;
-- исключение повторного parsing MIME.
+- a separate webhook queue;
+- a more efficient queue claim;
+- table partitioning/retention;
+- avoiding repeated MIME parsing.
 
-Каждое изменение должно иметь migration, rollback и reconciliation job.
+Every change must have a migration, a rollback and a reconciliation job.
 
-### Этап 3. Rust outbound worker как первый заменяемый компонент
+### Stage 3. A Rust outbound worker as the first replaceable component
 
-Предпочтительный первый Rust PoC — не полный аналог Postal, а совместимый outbound delivery worker.
+The preferred first Rust PoC is not a full analogue of Postal but a compatible outbound delivery worker.
 
-Он должен реализовать:
+It must implement:
 
-- получение задания через versioned adapter;
-- recipient state machine;
-- DNS/MX resolution и cache;
+- receiving a job through a versioned adapter;
+- the recipient state machine;
+- DNS/MX resolution and a cache;
 - SMTP/TLS delivery;
-- connection reuse по destination;
-- per-domain и per-IP concurrency/rate limits;
-- retry scheduling с jitter;
-- выбор sending IP и HELO identity;
-- запись delivery result и диагностической причины;
-- idempotency и attempt IDs;
-- метрики, structured logs и graceful shutdown;
-- backpressure при проблемах DB/queue/MX.
+- connection reuse per destination;
+- per-domain and per-IP concurrency/rate limits;
+- retry scheduling with jitter;
+- selection of the sending IP and the HELO identity;
+- recording the delivery result and the diagnostic reason;
+- idempotency and attempt IDs;
+- metrics, structured logs and graceful shutdown;
+- backpressure on DB/queue/MX problems.
 
-Сначала запускать его в shadow/read-only режиме либо направлять небольшой изолированный shard. Ruby worker должен оставаться доступным для rollback.
+Run it first in shadow/read-only mode, or route a small isolated shard to it. The Ruby worker must remain available for rollback.
 
-### Этап 4. Новая модель MIME storage
+### Stage 4. A new MIME storage model
 
-Целевая модель:
+The target model:
 
 ```text
-MessageContent (один immutable MIME blob)
+MessageContent (one immutable MIME blob)
     ├── RecipientEnvelope A
     ├── RecipientEnvelope B
     └── RecipientEnvelope C
 ```
 
-Требования:
+Requirements:
 
-- streaming upload вместо полного буфера в памяти;
-- content ID и контроль целостности;
-- один MIME blob на логическое письмо;
-- отдельные recipient/delivery states;
-- retention и безопасная сборка мусора;
-- поддержка DKIM/tracking transformations;
-- совместимость UI/API через adapter;
-- возможность object storage только после измерения latency и стоимости.
+- streaming upload instead of a full buffer in memory;
+- a content ID and integrity checking;
+- one MIME blob per logical message;
+- separate recipient/delivery states;
+- retention and safe garbage collection;
+- support for DKIM/tracking transformations;
+- UI/API compatibility through an adapter;
+- object storage only after latency and cost have been measured.
 
-### Этап 5. Вынос durable queue и retry scheduler
+### Stage 5. Moving out the durable queue and the retry scheduler
 
-Не добавлять Kafka, NATS, RabbitMQ или другую систему только ради слова «масштабирование». Решение принимается после подтверждения, что MariaDB queue остаётся bottleneck после более дешёвых изменений.
+Do not add Kafka, NATS, RabbitMQ or any other system just for the sake of the word "scaling". The decision is taken after it has been confirmed that the MariaDB queue remains the bottleneck after the cheaper changes.
 
-Новая очередь должна обеспечивать:
+The new queue must provide:
 
 - durable at-least-once processing;
-- partition key по destination domain и/или sending IP;
-- отложенные retries;
-- visibility timeout/lease recovery;
+- a partition key by destination domain and/or sending IP;
+- deferred retries;
+- a visibility timeout / lease recovery;
 - controlled redelivery;
-- backpressure и quotas;
+- backpressure and quotas;
 - replay/audit;
-- независимые очереди delivery, inbound и webhooks.
+- independent queues for delivery, inbound and webhooks.
 
-### Этап 6. Stateless ingress и горизонтальное масштабирование
+### Stage 6. Stateless ingress and horizontal scaling
 
-После отделения MIME storage и durable queue SMTP/API ingress может стать stateless:
+Once MIME storage and the durable queue have been separated out, SMTP/API ingress can become stateless:
 
-- streaming write;
+- streaming writes;
 - admission control;
-- idempotency key для HTTP API;
+- an idempotency key for the HTTP API;
 - bounded concurrency;
-- быстрый durable acknowledgement;
-- независимое масштабирование web и SMTP ingress.
+- fast durable acknowledgement;
+- independent scaling of web and SMTP ingress.
 
-## Выбор языка
+## Language choice
 
-### Rust — основной выбор для нового data plane
+### Rust — the primary choice for the new data plane
 
-Преимущества относительно C++:
+Advantages over C++:
 
-- близкая к C++ производительность без garbage collector;
-- memory safety без ручного управления временем жизни памяти;
-- защита от значительной части data races на уровне типов;
-- сильная модель ownership для in-flight message state;
-- современный async I/O ecosystem;
-- удобные статические бинарники и контейнеризация;
-- pattern matching и строгие enum для SMTP/delivery state machine;
-- встроенная культура тестирования, fuzzing и безопасного dependency management;
-- обычно меньшая стоимость многолетней поддержки сетевого сервиса, чем у нового C++ кода;
-- полезность технологии для дальнейшего рынка труда.
+- performance close to C++ without a garbage collector;
+- memory safety without manual management of memory lifetimes;
+- protection from a significant share of data races at the type level;
+- a strong ownership model for in-flight message state;
+- a modern async I/O ecosystem;
+- convenient static binaries and containerisation;
+- pattern matching and strict enums for the SMTP/delivery state machine;
+- a built-in culture of testing, fuzzing and safe dependency management;
+- usually a lower cost of maintaining a network service over many years than new C++ code;
+- the technology's usefulness for the future job market.
 
-Риски Rust:
+Rust risks:
 
-- learning curve и более медленная первая реализация;
-- долгие compile times;
-- email/SMTP libraries необходимо оценить прототипом;
-- нельзя компенсировать недостаток архитектуры только выбором языка.
+- the learning curve and a slower first implementation;
+- long compile times;
+- the email/SMTP libraries need to be assessed with a prototype;
+- a weak architecture cannot be compensated for by the choice of language alone.
 
 ### C++
 
-Использовать, если конкретная зрелая библиотека или существующий код дают измеримое преимущество. Для нового асинхронного SMTP worker Rust предпочтительнее из-за безопасности и сопровождаемости.
+Use it if a specific mature library or existing code offers a measurable advantage. For a new asynchronous SMTP worker, Rust is preferable because of safety and maintainability.
 
-### Ruby и TypeScript
+### Ruby and TypeScript
 
-- Ruby оставить для существующего control plane, UI и compatibility logic, пока они не доказаны bottleneck.
-- TypeScript подходит для CI orchestration, benchmark controller, reports и внутренних API.
-- TypeScript не является предпочтительным языком для самого горячего delivery loop.
-- Go не использовать из-за явного ограничения заказчика, но обязательно изучить причины отказа предыдущего Go-прототипа.
+- Keep Ruby for the existing control plane, the UI and compatibility logic until they are proven to be a bottleneck.
+- TypeScript is suitable for CI orchestration, the benchmark controller, reports and internal APIs.
+- TypeScript is not the preferred language for the hottest delivery loop itself.
+- Do not use Go, because of the customer's explicit restriction, but do study the reasons the previous Go prototype was rejected.
 
-## IP mapping и создание SMTP servers
+## IP mapping and the creation of SMTP servers
 
-До изменения workers документировать текущую цепочку:
+Document the current chain before changing the workers:
 
 ```text
 campaign/client/domain
@@ -591,22 +626,22 @@ campaign/client/domain
   → destination-domain throttling
 ```
 
-Нужно определить:
+The following must be determined:
 
-- является ли mapping статическим, случайным, weighted или reputation-aware;
-- как IP закрепляются за серверами и контейнерами;
-- как создаются и удаляются SMTP server configurations;
-- что происходит при недоступности worker host;
-- можно ли безопасно перераспределить очередь на другой IP;
-- как учитываются warming, complaint rate, bounce rate и provider limits;
-- где хранятся quotas и состояние throttling;
-- как обеспечивается согласованность при нескольких scheduler replicas.
+- whether the mapping is static, random, weighted or reputation-aware;
+- how IPs are pinned to servers and containers;
+- how SMTP server configurations are created and removed;
+- what happens when a worker host becomes unavailable;
+- whether the queue can be safely redistributed to another IP;
+- how warming, complaint rate, bounce rate and provider limits are accounted for;
+- where quotas and throttling state are stored;
+- how consistency is ensured with several scheduler replicas.
 
-IP rotation сама по себе не повышает deliverability. Слишком агрессивная смена IP может ухудшить репутацию и привести к блокировкам.
+IP rotation does not improve deliverability by itself. Changing IPs too aggressively can damage reputation and lead to blocks.
 
-## Delivery state и гарантии
+## Delivery state and guarantees
 
-Рекомендуемая state machine:
+The recommended state machine:
 
 ```text
 accepted → queued → leased → attempting
@@ -615,39 +650,39 @@ accepted → queued → leased → attempting
                          └── terminal_failed
 ```
 
-SMTP не позволяет гарантировать exactly-once во всех сетевых сбоях. Например, соединение может оборваться после того, как удалённый сервер принял письмо, но до фиксации ответа отправителем.
+SMTP does not allow exactly-once to be guaranteed across all network failures. For example, a connection may drop after the remote server has accepted the message but before the sender has recorded the response.
 
-Поэтому необходимы:
+Therefore the following are required:
 
 - at-least-once semantics;
-- уникальный message/recipient ID;
-- уникальный attempt ID;
-- идемпотентные внутренние события и webhooks;
-- детектор неожиданных duplicates;
-- audit trail всех переходов;
-- lease recovery после падения worker;
-- ограниченное число retries и dead-letter/terminal state.
+- a unique message/recipient ID;
+- a unique attempt ID;
+- idempotent internal events and webhooks;
+- a detector of unexpected duplicates;
+- an audit trail of all transitions;
+- lease recovery after a worker crash;
+- a bounded number of retries and a dead-letter/terminal state.
 
-## Deliverability отдельно от throughput
+## Deliverability separately from throughput
 
-Локальный Postfix показывает техническую пропускную способность, но production delivery зависит от:
+A local Postfix shows the technical throughput, but production delivery depends on:
 
-- latency и throttling Gmail/Microsoft/Yahoo/корпоративных MX;
-- IP/domain reputation и warming;
-- PTR/rDNS, SPF, DKIM и DMARC;
+- the latency and throttling of Gmail/Microsoft/Yahoo/corporate MX hosts;
+- IP/domain reputation and warming;
+- PTR/rDNS, SPF, DKIM and DMARC;
 - complaint/bounce suppression;
-- per-domain connection и message limits;
-- DNS failures и IPv4/IPv6 routing;
-- размера сообщений;
-- retries и greylisting.
+- per-domain connection and message limits;
+- DNS failures and IPv4/IPv6 routing;
+- message size;
+- retries and greylisting.
 
-Outbound MX delivery обычно использует TCP/25. Порты 465/587/2525 относятся преимущественно к submission или relay и не заменяют доступ к destination MX:25. Ограничения провайдера должны быть проверены до production deployment.
+Outbound MX delivery normally uses TCP/25. Ports 465/587/2525 mostly relate to submission or relay and do not replace access to the destination MX:25. Provider restrictions must be verified before production deployment.
 
-## Несколько независимых Postal-инсталляций
+## Several independent Postal installations
 
-Несколько полностью изолированных Postal installations с отдельными DB действительно могут дать почти линейный прирост, если workload можно статически разделить. Этот вариант следует сохранить как fallback и контрольный эксперимент.
+Several fully isolated Postal installations with separate DBs really can give an almost linear gain if the workload can be partitioned statically. This option should be kept as a fallback and as a control experiment.
 
-Потенциальные ключи шардирования:
+Potential sharding keys:
 
 - campaign;
 - client/account;
@@ -655,68 +690,68 @@ Outbound MX delivery обычно использует TCP/25. Порты 465/58
 - IP pool;
 - destination-domain partitions.
 
-Ограничения подхода:
+Limitations of the approach:
 
-- нужен глобальный router;
-- усложняются failover и rebalance;
-- suppressions/unsubscribes могут требовать общей консистентности;
-- статистика, поиск, webhooks и аудит становятся распределёнными;
-- возможны duplicates при переносе shard;
-- часть мощностей простаивает из-за неравномерных кампаний;
-- обновление модифицированного форка выполняется на каждом shard;
-- IP pools и worker placement всё равно требуют централизованного управления.
+- a global router is needed;
+- failover and rebalancing become more complex;
+- suppressions/unsubscribes may require shared consistency;
+- statistics, search, webhooks and audit become distributed;
+- duplicates are possible when moving a shard;
+- some capacity sits idle because campaigns are uneven;
+- upgrading the modified fork has to be done on every shard;
+- IP pools and worker placement still require centralised management.
 
-Для текущего campaign-only use case этот вариант может оказаться дешевле полного rewrite. Его следует сравнить по стоимости и операционной сложности с Rust data plane.
+For the current campaign-only use case this option may turn out to be cheaper than a full rewrite. It should be compared with the Rust data plane on cost and operational complexity.
 
-## Архитектурные принципы целевого решения
+## Architectural principles of the target solution
 
-- Разделять control plane Postal и высоконагруженный data plane.
-- Делать ingress stateless после durable сохранения.
-- Хранить MIME один раз, состояние — на recipient.
-- Разделять delivery queue, retry scheduler, inbound и webhooks.
-- Partitioning строить вокруг destination domain и sending IP.
-- Переиспользовать SMTP connections там, где это допускает принимающая сторона.
-- Применять per-domain/per-IP backpressure.
-- Считать статистику асинхронно из событий.
-- Не использовать глобальные горячие counters в transaction path.
-- Иметь versioned contracts между Postal и новыми компонентами.
-- Поддерживать canary, feature flags и быстрый rollback.
-- Проектировать операции идемпотентными.
-- Не хранить бесконечную историю без retention policy.
+- Separate the Postal control plane from the high-load data plane.
+- Make ingress stateless after a durable write.
+- Store the MIME once, keep state per recipient.
+- Separate the delivery queue, the retry scheduler, inbound and webhooks.
+- Build partitioning around the destination domain and the sending IP.
+- Reuse SMTP connections where the receiving side allows it.
+- Apply per-domain/per-IP backpressure.
+- Compute statistics asynchronously from events.
+- Do not use globally hot counters in the transaction path.
+- Have versioned contracts between Postal and the new components.
+- Support canaries, feature flags and fast rollback.
+- Design operations to be idempotent.
+- Do not store unbounded history without a retention policy.
 
-## Безопасность и эксплуатационные ограничения
+## Security and operational constraints
 
-- DKIM keys, SMTP credentials и DB passwords хранить вне Git-репозитория.
-- Не записывать raw MIME, адреса и credentials в обычные application logs.
-- Разделить DB-пользователей control plane, delivery workers и analytics по минимально необходимым правам.
-- Подписывать/фиксировать Docker images по digest и сохранять provenance сборки.
-- Ограничивать outbound network destinations каждого компонента.
-- Тестовый контур должен физически или правилами firewall исключать отправку реальным MX.
-- Любой debug/trace режим должен иметь ограниченный срок и объём хранения.
-- Backup/restore и disaster recovery проверять отдельно от performance benchmark.
+- Keep DKIM keys, SMTP credentials and DB passwords outside the Git repository.
+- Do not write raw MIME, addresses or credentials into ordinary application logs.
+- Separate the DB users of the control plane, the delivery workers and analytics by the minimum necessary privileges.
+- Sign/pin Docker images by digest and preserve the build provenance.
+- Restrict the outbound network destinations of every component.
+- The test environment must exclude sending to real MX hosts, physically or through firewall rules.
+- Any debug/trace mode must have a limited lifetime and a limited retention volume.
+- Verify backup/restore and disaster recovery separately from the performance benchmark.
 
-## Стратегия безопасного внедрения
+## A safe rollout strategy
 
-1. **Observe:** добавить метрики без изменения поведения.
-2. **Shadow:** новый компонент читает копию заданий, но не отправляет.
-3. **Synthetic shard:** отправка только на внутренний Postfix.
-4. **Canary:** малый production shard с отдельным IP/domain.
-5. **Compare:** reconciliation старого и нового paths.
-6. **Ramp:** 1% → 5% → 20% → 50% → 100% при выполнении SLO.
-7. **Rollback:** возможность немедленно вернуть shard Ruby workers.
+1. **Observe:** add metrics without changing behaviour.
+2. **Shadow:** the new component reads a copy of the jobs but does not send.
+3. **Synthetic shard:** sending only to an internal Postfix.
+4. **Canary:** a small production shard with a separate IP/domain.
+5. **Compare:** reconciliation of the old and the new path.
+6. **Ramp:** 1% → 5% → 20% → 50% → 100% while the SLO is met.
+7. **Rollback:** the ability to return a shard to the Ruby workers immediately.
 
-Нельзя одновременно менять queue, storage, SMTP worker и schema: при деградации невозможно будет локализовать причину.
+The queue, the storage, the SMTP worker and the schema must not be changed at the same time: on degradation it would be impossible to localise the cause.
 
 ## Cost model
 
-Для каждой сборки считать:
+Compute for every build:
 
 ```text
 cost_per_million =
   compute + database + storage + traffic + observability + operational overhead
 ```
 
-Минимальные показатели отчёта:
+The minimum report indicators:
 
 - recipients/core-hour;
 - recipients/GB RAM-hour;
@@ -724,121 +759,137 @@ cost_per_million =
 - stored GB per million;
 - outbound GB per million;
 - infrastructure cost per million;
-- engineer/operations complexity как качественная оценка.
+- engineering/operational complexity as a qualitative assessment.
 
-Оптимизация считается полезной, если она повышает throughput, снижает unit cost или улучшает latency/reliability без неприемлемого роста сложности.
+An optimisation is considered useful if it increases throughput, reduces unit cost, or improves latency/reliability without an unacceptable increase in complexity.
 
-## Что не следует делать
+## What not to do
 
-- Начинать с полного rewrite Postal.
-- Переписывать Web UI/admin panel ради скорости delivery.
-- Считать один API request одним письмом независимо от recipients.
-- Использовать только success-only SMTP sink.
-- Тестировать на реальных внешних адресатах.
-- Сравнивать сборки на разных типах серверов.
-- Выбирать лучший единичный run вместо медианы.
-- Увеличивать workers без наблюдения за DB locks и pool.
-- Добавлять индексы без проверки write cost и query plan.
-- Добавлять distributed queue до доказательства необходимости.
-- Терять историю delivery attempts ради throughput.
-- Делать случайную IP rotation без reputation model.
-- Объявлять `250 Accepted` попаданием в inbox.
+- Start with a full rewrite of Postal.
+- Rewrite the Web UI / admin panel for the sake of delivery speed.
+- Count one API request as one message regardless of the number of recipients.
+- Use a success-only SMTP sink.
+- Test against real external addressees.
+- Compare builds on different server types.
+- Pick the best single run instead of the median.
+- Increase the number of workers without watching DB locks and the pool.
+- Add indexes without checking the write cost and the query plan.
+- Add a distributed queue before the need has been proven.
+- Lose the history of delivery attempts for the sake of throughput.
+- Perform random IP rotation without a reputation model.
+- Declare a `250 Accepted` to be inbox placement.
 
-## Обязательные вопросы заказчику
+## Mandatory questions for the customer
 
-### Нагрузка и SLO
+### Load and SLO
 
-- 5 млн — messages или recipients?
-- За какое окно нужно отправить этот объём?
-- Каковы average, p95 и peak на интервалах 1 секунда, 1 минута и 5 минут?
-- Какой допустимый backlog и drain time?
-- Каковы p95/p99 acceptance и delivery latency?
-- Каковы средний/p95/p99 MIME size и recipients/message?
+- Are the 5 million messages or recipients?
+- Over what window must this volume be sent?
+- What are the average, p95 and peak over 1-second, 1-minute and 5-minute intervals?
+- What backlog and drain time are acceptable?
+- What are the p95/p99 acceptance and delivery latencies?
+- What are the average/p95/p99 MIME size and recipients/message?
 
-### Текущая система
+### The current system
 
-- Можно ли получить форк, commit SHA и diff относительно upstream?
-- Какая точная схема серверов, DB, workers и IP pools?
-- Какие запросы/процессы saturate CPU, DB, disk или network?
-- Каковы queue length, queue latency, retry/bounce rate?
-- Какие оптимизации уже были сделаны?
-- Что означает текущий предел 1 млн и где он измерен?
+- Can we get the fork, the commit SHA and the diff against upstream?
+- What is the exact layout of servers, DBs, workers and IP pools?
+- Which queries/processes saturate the CPU, DB, disk or network?
+- What are the queue length, the queue latency and the retry/bounce rate?
+- Which optimisations have already been made?
+- What does the current limit of 1 million mean and where was it measured?
 
-### Предыдущий Go-прототип
+The following four questions became the most important ones after the concurrency series,
+because the measurements point at configuration rather than at Ruby:
 
-- Где находится код?
-- Как был подтверждён результат 5 млн?
-- Какие именно проблемы привели к отказу?
-- Были ли потери, duplicates, проблемы с tracking, IP mapping, retries или deliverability?
-- Можно ли повторить его benchmark на новом стенде?
+- **What are `WORKER_THREADS` and the number of worker replicas?** The default is 2 threads.
+  At a realistic delivery latency that alone caps the rate near 7 recipients/s per two
+  replicas — roughly 0.6M per day, the same order as the reported ceiling.
+- **Which upstream version is the fork based on?** A configurable thread count in the worker
+  appeared only in Postal 3.3.0 (March 2024). A fork from an earlier base may have the
+  concurrency fixed in code, which would explain a ceiling that no amount of hardware moves.
+- **What is `MAIN_DB_POOL_SIZE` and MariaDB's `max_connections`?** The pool default is 5 and
+  becomes the limiter before the threads do; a pool smaller than the thread count silently
+  serialises delivery.
+- **What is the average duration of one delivery, and what is the worker's CPU utilisation?**
+  If CPU sits low while the queue grows, the money is being spent on processors that wait on
+  the network, and more servers will not help.
 
-### Функции
+### The previous Go prototype
 
-- Какие custom features реально используются?
-- Нужны ли inbound routes, spam/virus scanning, tracking и webhooks?
-- Как устроены global suppressions/unsubscribes?
-- Какой retention нужен для MIME, events и logs?
-- Как должен работать поиск истории?
+- Where is the code?
+- How was the result of 5 million confirmed?
+- Which problems exactly led to it being rejected?
+- Were there losses, duplicates, or problems with tracking, IP mapping, retries or deliverability?
+- Can its benchmark be repeated on the new bench?
 
-### IP и SMTP
+### Features
 
-- Сколько sending IP и на каких узлах они находятся?
-- Как работает mapping campaign/domain → IP pool?
-- Как создаются SMTP servers и credentials?
-- Какие правила warming, quotas и failover?
-- Какие cloud/hosting providers разрешают необходимый outbound TCP/25?
+- Which custom features are actually used?
+- Are inbound routes, spam/virus scanning, tracking and webhooks needed?
+- How do global suppressions/unsubscribes work?
+- What retention is needed for MIME, events and logs?
+- How is searching the history supposed to work?
 
-## Definition of Done для каждой оптимизации
+### IP and SMTP
 
-Изменение можно принять только если:
+- How many sending IPs are there and on which nodes do they reside?
+- How does the campaign/domain → IP pool mapping work?
+- How are SMTP servers and credentials created?
+- What are the warming, quota and failover rules?
+- Which cloud/hosting providers allow the required outbound TCP/25?
 
-- есть benchmark до и после;
-- ресурсы и workload идентичны;
-- результат повторён минимум пять раз;
-- приведён процент прироста и разброс;
-- очередь не растёт на steady load;
-- reconciliation не обнаружил потерь;
-- duplicates не превышают согласованный предел;
-- retries, bounces, tracking и webhooks сохранили контракт;
-- показан новый bottleneck;
-- есть migration и rollback plan;
-- обновлены этот документ, ADR и benchmark report.
+## Definition of Done for every optimisation
 
-## Рекомендуемая структура ADR
+A change can only be accepted if:
 
-Для каждого существенного решения создавать отдельный Architecture Decision Record:
+- there is a benchmark before and after;
+- the resources and the workload are identical;
+- the result was repeated at least five times;
+- the percentage gain and the spread are given;
+- the queue does not grow under steady load;
+- the reconciliation found no losses;
+- duplicates do not exceed the agreed limit;
+- retries, bounces, tracking and webhooks preserved their contract;
+- the new bottleneck is shown;
+- there is a migration and rollback plan;
+- this document, the ADR and the benchmark report have been updated.
+
+## Recommended ADR structure
+
+Create a separate Architecture Decision Record for every significant decision:
 
 ```markdown
-# ADR-NNN: Название решения
+# ADR-NNN: Title of the decision
 
 ## Context
 
-Какой измеренный bottleneck устраняется.
+Which measured bottleneck is being addressed.
 
 ## Baseline
 
-Commit, image digest, workload, ресурсы и результаты.
+The commit, image digest, workload, resources and results.
 
 ## Decision
 
-Какое изменение принято.
+Which change was adopted.
 
 ## Alternatives
 
-Какие варианты рассматривались и почему отклонены.
+Which options were considered and why they were rejected.
 
 ## Consequences
 
-Производительность, корректность, стоимость, migration и rollback.
+Performance, correctness, cost, migration and rollback.
 
 ## Verification
 
-Ссылки на benchmark artifacts и reconciliation report.
+Links to the benchmark artifacts and the reconciliation report.
 ```
 
-## Исходные точки в upstream Postal
+## Entry points in upstream Postal
 
-Ссылки ниже указывают на `main` для удобства навигации. В benchmark report необходимо записывать точный commit SHA и по возможности заменять ссылки на pinned revision.
+The links below point at `main` for ease of navigation. The benchmark report must record the exact commit SHA and, where possible, replace the links with pinned revisions.
 
 - Runtime commands: [`bin/postal`](https://github.com/postalserver/postal/blob/main/bin/postal)
 - SMTP persistence before `250`: [`app/lib/smtp_server/client.rb`](https://github.com/postalserver/postal/blob/main/app/lib/smtp_server/client.rb)
@@ -851,12 +902,12 @@ Commit, image digest, workload, ресурсы и результаты.
 - Main/message DB and worker configuration: [`doc/config/yaml.yml`](https://github.com/postalserver/postal/blob/main/doc/config/yaml.yml)
 - Postal 3 changes: [`CHANGELOG.md`](https://github.com/postalserver/postal/blob/main/CHANGELOG.md)
 
-## Рабочий план проекта
+## The project work plan
 
-1. Развернуть воспроизводимый тестовый контур.
-2. Автоматизировать его deployment через Ansible inventory.
-3. Измерить upstream Postal и клиентский fork.
-4. Создать fork и CI/CD для автоматического benchmark каждого кандидата.
-5. Выполнять малые подтверждённые оптимизации существующего кода.
-6. Реализовать совместимый worker с оптимизациями PoC для первого доказанного bottleneck.
-7. Постепенно заменять queue/storage/ingress только при наличии измерений и безопасной migration path.
+1. Deploy a reproducible test environment.
+2. Automate its deployment through the Ansible inventory.
+3. Measure upstream Postal and the client's fork.
+4. Create a fork and CI/CD for automatically benchmarking every candidate.
+5. Perform small, confirmed optimisations of the existing code.
+6. Implement a compatible worker with PoC optimisations for the first proven bottleneck.
+7. Gradually replace the queue/storage/ingress, only where measurements and a safe migration path exist.

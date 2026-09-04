@@ -1,11 +1,11 @@
 ---
-# Приведение стенда к одинаковому стартовому состоянию.
+# Bringing the bench to an identical starting state.
 #
-# Эта роль разрушительна и неидемпотентна ПО ЗАМЫСЛУ: протокол сравнения
-# сборок требует одинакового состояния БД и очереди перед каждым прогоном.
-# Делать её идемпотентной значило бы тихо сломать сравнение.
+# This role is destructive and non-idempotent BY DESIGN: the build comparison protocol
+# requires an identical DB and queue state before every run.
+# Making it idempotent would quietly break the comparison.
 
-- name: Очистить очередь
+- name: Clear the queue
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -15,10 +15,10 @@
     query: "TRUNCATE TABLE queued_messages"
   changed_when: true
 
-# Два HardFail на адрес за сутки переводят все последующие письма ему в Held.
-# Без очистки список подавления переносится между прогонами серии,
-# и второй прогон стартует в других условиях, чем первый.
-- name: Очистить список подавления
+# Two HardFails per address within a day move all subsequent messages to it into Held.
+# Without clearing, the suppression list carries over between runs of a series,
+# and the second run starts under different conditions than the first.
+- name: Clear the suppression list
   community.mysql.mysql_query:
     login_host: "{{ postal_message_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -29,11 +29,11 @@
   changed_when: true
   failed_when: false
 
-# Пересоздание базы сообщений через сам Postal: provisioner делает
-# DROP + CREATE + миграции и попутно убирает посуточные таблицы raw-*.
-# Простой TRUNCATE их бы не тронул, и следующий прогон стартовал бы
-# с другим профилем занятости диска.
-- name: Пересоздать базу сообщений
+# Recreating the message database through Postal itself: the provisioner performs
+# DROP + CREATE + migrations and along the way removes the per-day raw-* tables.
+# A plain TRUNCATE would not touch them, and the next run would start
+# with a different disk occupancy profile.
+- name: Recreate the message database
   ansible.builtin.command:
     argv:
       - docker
@@ -55,7 +55,7 @@
   run_once: true
   changed_when: true
 
-- name: Убедиться, что таблиц raw-* не осталось
+- name: Make sure no raw-* tables are left
   community.mysql.mysql_query:
     login_host: "{{ postal_message_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -69,7 +69,7 @@
   changed_when: false
   failed_when: (raw_tables.query_result[0][0].n | int) > 0
 
-- name: Очистить логи приёмника
+- name: Clear the sink logs
   ansible.builtin.shell:
     cmd: ": > {{ postfix_sink_log }}"
   args:
@@ -78,10 +78,10 @@
   loop: "{{ groups['postfix_sinks'] }}"
   changed_when: true
 
-# Сбрасывается на ВСЕХ хостах с изоляцией, а не только на текущем:
-# счётчик читается отчётом суммарно, и несброшенный остаток на соседнем
-# хосте выглядел бы как утечка в этом прогоне.
-- name: Обнулить счётчики попыток утечки
+# Reset on ALL hosts with containment, not only the current one:
+# the counter is read by the report as a total, and an unreset remainder on a neighbouring
+# host would look like a leak in this run.
+- name: Zero the leak attempt counters
   ansible.builtin.command:
     argv: [nft, reset, counter, inet, mailguard, smtp_escape_attempts]
   delegate_to: "{{ item }}"

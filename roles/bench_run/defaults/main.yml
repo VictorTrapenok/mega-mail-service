@@ -1,6 +1,6 @@
 ---
-# Идентификатор прогона задаётся плейбуком; здесь только запасное значение.
+# The run identifier is set by the playbook; this is only a fallback value.
 #
-# Команда запуска генератора живёт в group_vars/all/50-bench.yml: её используют
-# несколько ролей, а default роли виден только пока эта роль выполняется.
+# The generator launch command lives in group_vars/all/50-bench.yml: it is used by
+# several roles, and a role default is only visible while that role is executing.
 bench_run_id: "manual"

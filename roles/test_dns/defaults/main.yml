@@ -1,23 +1,23 @@
 ---
-# Внутренний авторитативный DNS для зоны .test.
+# Internal authoritative DNS for the .test zone.
 #
-# Он обязателен, а не желателен: app/lib/dns_resolver.rb обращается через
-# Resolv::DNS и никогда не читает /etc/hosts, а MX-записи в hosts-файле
-# не существует как типа. Неотвеченный MX-запрос стоит около 10 секунд
-# и поднимает исключение (raise_timeout_errors: true), превращаясь в SoftFail —
-# то есть отсутствие DNS выглядит как медленный Postal.
+# It is mandatory, not optional: app/lib/dns_resolver.rb goes through
+# Resolv::DNS and never reads /etc/hosts, and an MX record does not exist
+# as a type in a hosts file. An unanswered MX query costs about 10 seconds
+# and raises an exception (raise_timeout_errors: true), turning into a SoftFail —
+# i.e. the absence of DNS looks like a slow Postal.
 
 
-# Домены назначения — поддомены основной зоны, поэтому одна зона покрывает всё.
-# Отвечает плагин template по регулярному выражению: держать 1000 записей
-# в файле незачем.
+# The destination domains are subdomains of the main zone, so a single zone covers everything.
+# The template plugin answers them by regular expression: there is no point in keeping
+# 1000 records in a file.
 test_dns_destination_prefix: "d"
 
-# Куда указывают MX доменов назначения. Несколько sink'ов получают
-# одинаковый приоритет: DNSResolver#mx рандомизирует равноприоритетные записи,
-# так что нагрузка расходится сама, без балансировщика.
+# Where the MX records of the destination domains point. Several sinks are given
+# the same priority: DNSResolver#mx randomises records of equal priority,
+# so the load spreads by itself without a load balancer.
 test_dns_mx_priority: 10
 
-# Файл resolv.conf, который подсовывается контейнерам Postal через
-# DNS_RESOLV_CONF_PATH. Хостовой /etc/resolv.conf не трогаем: при
-# network_mode: host Postal унаследовал бы systemd-resolved на 127.0.0.53.
+# The resolv.conf file handed to the Postal containers via
+# DNS_RESOLV_CONF_PATH. We do not touch the host's /etc/resolv.conf: with
+# network_mode: host, Postal would inherit systemd-resolved on 127.0.0.53.

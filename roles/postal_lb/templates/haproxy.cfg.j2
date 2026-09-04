@@ -1,15 +1,15 @@
 #-# {{ ansible_managed }}
 #
-# Балансировщик HTTP API Postal.
+# The Postal HTTP API load balancer.
 #
-# Существует потому, что приём масштабируется процессами, а не потоками:
-# у MRI Ruby есть GVL, и один процесс Puma не выполняет счётную работу
-# больше чем на одном ядре. Обращаться к первому процессу из нескольких
-# значило бы измерять один процесс вместо системы.
+# It exists because ingress scales by processes, not by threads:
+# MRI Ruby has a GVL, and a single Puma process does not perform compute work
+# on more than one core. Talking to the first of several processes
+# would mean measuring one process instead of the system.
 #
-# Только HTTP. Балансировать SMTP запрещено: HAProxy терминирует TCP,
-# и приёмник увидел бы его адрес вместо исходящего, который Postal привязал
-# к сокету, — это уничтожает единственное сквозное доказательство привязки IP.
+# HTTP only. Balancing SMTP is forbidden: HAProxy terminates TCP,
+# and the sink would see its address instead of the outbound one that Postal bound
+# to the socket — that destroys the only end-to-end proof of IP binding.
 
 global
     maxconn {{ postal_lb_maxconn }}
@@ -21,9 +21,9 @@ defaults
     option httplog
     maxconn {{ postal_lb_maxconn }}
     timeout connect 5s
-    # Таймауты заведомо больше худшей наблюдавшейся латентности приёма:
-    # под перегрузом она доходила до минуты, и балансировщик, обрывающий
-    # соединение раньше, показал бы отказы Postal там, где их нет.
+    # The timeouts are knowingly larger than the worst observed ingress latency:
+    # under overload it reached a minute, and a balancer cutting the connection
+    # earlier would show Postal failures where there are none.
     timeout client {{ postal_lb_timeout }}
     timeout server {{ postal_lb_timeout }}
     timeout http-request {{ postal_lb_timeout }}
@@ -34,12 +34,12 @@ frontend api
 
 backend postal_web
     balance roundrobin
-    # Проверка только на установление TCP-соединения, как и healthcheck самих
-    # контейнеров: до postal initialize таблиц ещё нет, и HTTP-путь закономерно
-    # отдаёт 500, из-за чего httpchk выводил бы живые процессы из ротации.
-{# Число реплик берётся из фактов КАЖДОГО web-хоста, а не из переменной этого:
-   шаблон рендерится на балансировщике, и его собственное значение относится
-   к нему самому. Хосты приёма могут нести разное число процессов. #}
+    # The check only establishes a TCP connection, just like the healthcheck of the
+    # containers themselves: before postal initialize there are no tables yet, and the HTTP path
+    # predictably returns 500, which would make httpchk take live processes out of rotation.
+{# The replica count is taken from the facts of EACH web host rather than from this host's
+   variable: the template is rendered on the balancer, and its own value applies
+   to itself. Ingress hosts may carry different numbers of processes. #}
 {% for h in groups['postal_web'] | default([]) %}
 {% for i in range(hostvars[h].postal_web_replicas | int) %}
     server web-{{ h }}-{{ i + 1 }} {{ hostvars[h].svc_ip }}:{{ postal_web_port + i }} check inter 5s rise 2 fall 3
@@ -50,7 +50,7 @@ listen stats
     bind {{ svc_ip }}:{{ postal_lb_stats_port }}
     stats enable
     stats uri /
-    # Распределение по процессам приёма нужно видеть: перекос означает, что
-    # часть из них не работает, и приём измерен не на том числе процессов,
-    # которое записано в отчёте.
+    # The distribution across ingress processes must be visible: a skew means that
+    # some of them are not working, and ingress was measured on a different number of
+    # processes than the report records.
     stats refresh 5s

@@ -1,5 +1,5 @@
 ---
-- name: Создать каталог CoreDNS
+- name: Create the CoreDNS directory
   ansible.builtin.file:
     path: "{{ test_dns_dir }}"
     state: directory
@@ -7,43 +7,43 @@
     group: root
     mode: "0755"
 
-- name: Развернуть Corefile
+- name: Deploy the Corefile
   ansible.builtin.template:
     src: Corefile.j2
     dest: "{{ test_dns_dir }}/Corefile"
     owner: root
     group: root
     mode: "0644"
-  notify: Перезапустить CoreDNS
+  notify: Restart CoreDNS
 
-- name: Развернуть зону {{ postal_test_domain }}
+- name: Deploy the {{ postal_test_domain }} zone
   ansible.builtin.template:
     src: zone.j2
     dest: "{{ test_dns_dir }}/{{ postal_test_domain }}.zone"
     owner: root
     group: root
     mode: "0644"
-  notify: Перезапустить CoreDNS
+  notify: Restart CoreDNS
 
-- name: Развернуть compose-файл CoreDNS
+- name: Deploy the CoreDNS compose file
   ansible.builtin.template:
     src: docker-compose.yml.j2
     dest: "{{ test_dns_dir }}/docker-compose.yml"
     owner: root
     group: root
     mode: "0644"
-  notify: Перезапустить CoreDNS
+  notify: Restart CoreDNS
 
-- name: Запустить CoreDNS
+- name: Start CoreDNS
   community.docker.docker_compose_v2:
     project_src: "{{ test_dns_dir }}"
     state: present
     wait: true
 
-- name: Применить отложенный перезапуск CoreDNS
+- name: Apply the deferred CoreDNS restart
   ansible.builtin.meta: flush_handlers
 
-- name: Проверить, что MX домена назначения резолвится авторитативно
+- name: Check that a destination domain MX resolves authoritatively
   ansible.builtin.command:
     argv:
       - dig
@@ -55,9 +55,9 @@
   changed_when: false
   failed_when: dns_check_mx.stdout | trim == ""
 
-# Внешние домены не должны резолвиться вообще: это отдельный рубеж изоляции,
-# который срабатывает раньше правил nftables и не зависит от них.
-- name: Проверить, что внешние домены не резолвятся
+# External domains must not resolve at all: this is a separate containment line
+# that fires before the nftables rules and does not depend on them.
+- name: Check that external domains do not resolve
   ansible.builtin.command:
     argv: [dig, "@{{ test_dns_addr }}", "+short", MX, "gmail.com"]
   register: dns_check_external

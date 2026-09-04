@@ -1,0 +1,5 @@
+---
+- name: Validate the netplan configuration
+  ansible.builtin.command:
+    argv: [netplan, generate]
+  changed_when: false

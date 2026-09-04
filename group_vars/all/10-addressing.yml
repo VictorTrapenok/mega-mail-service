@@ -1,17 +1,17 @@
 ---
-# Адресация стенда.
+# Test bench addressing.
 #
-# svc_ip вычисляется в контексте КАЖДОГО хоста, поэтому hostvars[h].svc_ip
-# корректно раскрывается для чужого хоста. Двухаргументная форма default(x, true)
-# нужна, чтобы пустая строка тоже проваливалась к следующему варианту,
-# а не подставлялась как адрес.
+# svc_ip is evaluated in the context of EVERY host, so hostvars[h].svc_ip
+# resolves correctly for another host. The two-argument form default(x, true)
+# is needed so that an empty string also falls through to the next option
+# instead of being substituted as an address.
 svc_ip: >-
   {{ service_ip
      | default(ansible_host
      | default(ansible_facts.default_ipv4.address | default('', true), true), true) }}
 
-# --- Производные адреса зависимостей -------------------------------------
-# Все они собираются из inventory, ни один адрес не хардкодится.
+# --- Derived dependency addresses ----------------------------------------
+# All of them are assembled from the inventory; no address is hardcoded.
 
 postal_main_db_addr: "{{ hostvars[groups['postal_main_db'] | first].svc_ip }}"
 postal_message_db_addr: "{{ hostvars[groups['postal_message_db'] | first].svc_ip }}"
@@ -22,11 +22,11 @@ test_dns_addr: "{{ hostvars[groups['test_dns'] | first].svc_ip }}"
 postal_web_addrs: "{{ groups['postal_web'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
 postal_lb_addrs: "{{ groups['postal_load_balancers'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
 
-# Точка входа HTTP API для генератора и проверок. Балансировщик используется,
-# как только он есть в inventory: при нескольких процессах приёма обращение
-# к первому из них измеряло бы один процесс, а не систему.
-# Балансировка SMTP при этом запрещена и здесь не появится — HAProxy терминирует
-# TCP, и приёмник увидел бы его адрес вместо исходящего, который привязал Postal.
+# HTTP API entry point for the load generator and the checks. The load balancer is used
+# as soon as it is present in the inventory: with several ingress processes, talking
+# to the first one would measure a single process rather than the system.
+# SMTP load balancing is forbidden and will not appear here — HAProxy terminates
+# TCP, and the sink would see its address instead of the outbound one bound by Postal.
 postal_api_addr: >-
   {{ (postal_lb_addrs | first) ~ ':' ~ postal_lb_port
      if (postal_lb_addrs | length) > 0
@@ -35,14 +35,24 @@ postal_smtp_addrs: "{{ groups['postal_smtp'] | default([]) | map('extract', host
 postal_worker_addrs: "{{ groups['postal_workers'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
 postfix_sink_addrs: "{{ groups['postfix_sinks'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
 
-# Подсеть стенда: всё, что вне её, недостижимо по SMTP (см. роль containment).
+# Every outbound address of every worker, flattened. The sink permits relaying by client
+# address (mynetworks), so an address missing from this list connects successfully and is
+# then refused at RCPT TO with "554 Access denied" — the queue rows bound to it all become
+# HardFail. Measured the hard way: five of six pool addresses failed exactly like that,
+# while TCP connectivity to the sink was fine from all six.
+postal_sending_addrs: >-
+  {{ groups['postal_workers'] | default([])
+     | map('extract', hostvars, 'postal_sending_ips') | select('truthy') | flatten
+     | map(attribute='ipv4') | list }}
+
+# The test bench subnet: anything outside it is unreachable over SMTP (see the containment role).
 stand_cidr: >-
-  {{ (postal_web_addrs + postal_smtp_addrs + postal_worker_addrs
+  {{ (postal_web_addrs + postal_smtp_addrs + postal_worker_addrs + postal_sending_addrs
       + postfix_sink_addrs + [postal_main_db_addr, test_dns_addr]) | unique }}
 
-# Хосты, на которых стоит изоляция. Счётчик утечек читается и сбрасывается
-# на всех них: чтение с одного означало бы, что утечка с любого другого
-# просто не видна.
+# Hosts that have containment in place. The leak counter is read and reset
+# on all of them: reading it from a single host would mean a leak from any
+# other one simply stays invisible.
 containment_hosts: >-
   {{ ((groups['postal_web'] | default([]))
       + (groups['postal_smtp'] | default([]))

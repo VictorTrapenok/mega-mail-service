@@ -1,5 +1,5 @@
 ---
-# Требуемое состояние воркеров: running или stopped.
-# Значение задаётся вызывающим плейбуком; безопасный запасной вариант —
-# рабочее состояние, чтобы забытый вызов не оставил стенд без доставки.
+# The desired worker state: running or stopped.
+# The value is set by the calling playbook; the safe fallback is the
+# running state, so that a forgotten call does not leave the bench without delivery.
 bench_workers_state: running

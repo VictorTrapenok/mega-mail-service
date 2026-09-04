@@ -1,30 +1,30 @@
 ---
-# Профиль нагрузки и параметры прогона.
+# Load profile and run parameters.
 #
-# Основной профиль ЗАМОРОЖЕН и не меняется между сборками — иначе сравнение
-# теряет смысл. Дополнительные профили не подменяют основной.
+# The primary profile is FROZEN and does not change between builds — otherwise the
+# comparison becomes meaningless. Additional profiles do not replace the primary one.
 
 bench_profile: primary
 
 bench_profiles:
   primary:
-    # 1 получатель на письмо, тогда recipients == messages и сверка простая.
+    # 1 recipient per message, so recipients == messages and reconciliation is simple.
     recipients_per_message: 1
     mime_size_bytes: 102400
-    # Кардинальность доменов принципиальна: batch_key = "outgoing-<domain>"
-    # собирает до 100 писем в батч, поэтому отправка в один домен дарит Postal
-    # бесплатный примерно стократный выигрыш и делает базу нечестной.
+    # Domain cardinality matters fundamentally: batch_key = "outgoing-<domain>"
+    # packs up to 100 messages into a batch, so sending to a single domain hands Postal
+    # a free ~100x win and makes the baseline dishonest.
     destination_domains: 1000
     destination_skew: zipf
     tracking: false
     dkim: true
     webhooks: false
 
-  # Профиль высокой кардинальности доменов. Нужен потому, что запрос батчинга
-  # (batchable_messages) не покрыт индексом и прерывается только по набору
-  # 100 строк с тем же batch_key либо по концу таблицы. Чем реже совпадает
-  # batch_key, тем чаще он доходит до конца, поэтому широкая рассылка стоит
-  # кардинально дороже узкой при той же длине очереди.
+  # High domain cardinality profile. It is needed because the batching query
+  # (batchable_messages) is not covered by an index and stops only once it has collected
+  # 100 rows with the same batch_key, or at the end of the table. The rarer the batch_key
+  # matches, the more often it runs to the end, so a wide mailing costs
+  # dramatically more than a narrow one at the same queue length.
   wide_domains:
     recipients_per_message: 1
     mime_size_bytes: 102400
@@ -34,68 +34,103 @@ bench_profiles:
     dkim: true
     webhooks: false
 
-# Целевая скорость, получателей в секунду.
-# 5 млн за 24 ч = 58 rcpt/s в среднем.
+# Target rate, recipients per second.
+# 5M over 24h = 58 rcpt/s on average.
 bench_target_rate: 58
 
-# Фазы прогона, секунды.
+# Run phases, seconds.
 bench_warmup_s: 180
 bench_duration_s: 900
 bench_drain_timeout_s: 900
 
-# Запас виртуальных пользователей генератора относительно заданной скорости.
-# По закону Литтла скорость R при латентности L требует R*L одновременных VU,
-# поэтому потолок VU сам ограничивает достижимую скорость: при факторе 10
-# прогон не мог подать 58 писем/с, едва латентность приёма дошла до 10 с,
-# и генератор начал ронять итерации. Ненулевой dropped_iterations означает,
-# что ограничил генератор, а не система под тестом.
+# Headroom of generator virtual users relative to the configured rate.
+# By Little's law, a rate R at latency L requires R*L concurrent VUs,
+# so the VU ceiling itself limits the achievable rate: at a factor of 10 the
+# run could not sustain 58 messages/s once ingress latency reached 10 s,
+# and the generator started dropping iterations. A non-zero dropped_iterations means
+# the generator was the limiter, not the system under test.
 bench_max_vu_factor: 30
 
-# --- Предзаполнение очереди -----------------------------------------------
-# Длина очереди — не косметика профиля, а главная переменная стоимости разбора.
-# Оба горячих запроса воркера (захват строки и набор батча) не покрыты ни одним
-# индексом, поэтому на пустой очереди гипотеза о полном переборе не проверяема
-# вообще, а измеренная скорость относится к случаю, которого в проде нет.
+# --- Queue prefill --------------------------------------------------------
+# Queue length is not profile cosmetics but the main variable in the cost of dequeuing.
+# Both hot worker queries (row claim and batch assembly) are covered by no index at all,
+# so on an empty queue the full-scan hypothesis cannot be tested whatsoever,
+# and the measured rate describes a case that does not exist in production.
 bench_prefill_recipients: 50000
 bench_prefill_burst_vus: 32
 bench_prefill_timeout_s: 3600
 
-# Доля строк, переводимых в отложенные (retry_after в будущем), от 0 до 1.
-# Откладываются самые старые строки по первичному ключу, потому что именно так
-# очередь вырождается в проде: письмо получило временный отказ и осталось
-# в голове таблицы со своим прежним id, а новые письма получают id больше.
-# Запрос захвата идёт по первичному ключу без ORDER BY и останавливается
-# на первой подходящей строке, поэтому неготовая голова таблицы — это ровно то,
-# что превращает захват из O(1) в полный перебор.
+# Fraction of rows moved to deferred state (retry_after in the future), from 0 to 1.
+# The oldest rows by primary key are deferred, because that is exactly how
+# a queue degenerates in production: a message got a temporary rejection and stayed
+# at the head of the table with its former id, while new messages get larger ids.
+# The claim query scans by primary key without ORDER BY and stops
+# at the first suitable row, so a not-ready head of the table is precisely what
+# turns the claim from O(1) into a full scan.
 bench_prefill_deferred_share: 0.0
 bench_prefill_deferred_delay_s: 3600
 
-# Класс прогона: debug (всё на одном хосте, для сравнения сборок непригоден)
-# или scored (генератор, SUT и sink на разных хостах).
-# Проставляется preflight'ом автоматически и попадает в отчёт.
+# --- Sink realism --------------------------------------------------------
+# These two knobs decide how close the measurement is to production, and they live here
+# rather than in the sink role because the report reads them as well — it runs on the DB
+# host, where a default of another role is not visible, and would otherwise print the
+# default instead of the value actually in effect.
+
+# Artificial latency of the sink's SMTP responses, milliseconds. 0 disables it.
+#
+# Needed because a sink that answers instantly measures the upper bound of Postal
+# rather than production speed. Draining the queue is not a compute task but waiting
+# on the network: its ceiling equals concurrency divided by the delivery latency.
+# A real MX spends hundreds of milliseconds on a session — TCP, STARTTLS, DATA,
+# the response — while ours replies from tmpfs in units of milliseconds.
+#
+# The delay is applied with tc netem to outgoing packets from port 25 only, so it
+# models the network rather than altering Postfix itself. Traffic that the filter does
+# not match goes through the default band without any delay — otherwise the run would
+# take SSH down along with it.
+postfix_sink_response_delay_ms: 0
+
+# Simultaneous connections allowed from one client address. 0 means unlimited, which is
+# what the primary profile uses: our concern there is Postal, not the sink.
+#
+# A non-zero value models what real recipient providers do — they cap concurrent sessions
+# per source address — and it is the only way to make an IP pool show its purpose. With one
+# sending address the cap wastes any worker concurrency above it; spread across a pool of
+# addresses, the same cap allows limit x addresses in parallel.
+#
+# Mind the side effect: over the cap Postfix answers 421, which Postal classifies as a
+# SoftFail and defers, so the run stops being a clean drain and becomes a measurement of
+# how much got through before deferral. Mind also that the enforcing anvil service is
+# single-process, so at very high connection rates it becomes a limiter of its own.
+postfix_sink_client_connection_limit: 0
+
+
+# Run class: debug (everything on one host, unsuitable for comparing builds)
+# or scored (generator, SUT and sink on different hosts).
+# Set automatically by preflight and included in the report.
 bench_run_class: "{{ 'debug' if (groups['load_generators'] | intersect(groups['postal_workers'])) else 'scored' }}"
 
-# Калибровка: во сколько раз связка генератор→sink должна опережать цель.
-# Если запаса нет, измеряем Postfix, а думаем, что измеряем Postal.
+# Calibration: how many times faster than the target the generator-to-sink path must be.
+# Without that headroom we measure Postfix while thinking we measure Postal.
 bench_calibration_headroom: 2.0
 
-# Частота опроса лёгких сэмплеров (глубина очереди, docker stats), секунды.
+# Polling interval of the lightweight samplers (queue depth, docker stats), seconds.
 bench_sample_interval_s: 5
 
-# Допустимое расхождение сверки, доля.
+# Acceptable reconciliation discrepancy, as a fraction.
 bench_reconcile_tolerance: 0.01
 
-# Куда складываются отчёты на управляющей машине.
+# Where reports are stored on the control machine.
 bench_reports_dir: "{{ playbook_dir }}/../reports"
 
-# --- Запуск генератора ----------------------------------------------------
-# Команда лежит здесь, а не в defaults роли, по той же причине, что и пути
-# в 15-paths.yml: генератор запускают несколько ролей (bench_run, bench_prefill,
-# bench_ingress), а default роли виден только пока эта роль выполняется.
+# --- Launching the generator ----------------------------------------------
+# The command lives here rather than in role defaults for the same reason as the paths
+# in 15-paths.yml: the generator is launched by several roles (bench_run, bench_prefill,
+# bench_ingress), and a role default is only visible while that role is executing.
 #
-# Лимиты применяются здесь: без них контейнер генератора конкурирует
-# с системой под тестом без ограничений, что особенно заметно
-# в отладочной раскладке на одной машине.
+# The limits are applied here: without them the generator container competes
+# with the system under test without any restriction, which is especially noticeable
+# in the debug layout on a single machine.
 bench_loadgen_argv:
   - docker
   - run
@@ -126,7 +161,7 @@ bench_loadgen_argv:
   - "-e"
   - "BENCH_MAX_VU_FACTOR={{ bench_max_vu_factor }}"
 
-# Привязка генератора к ядрам — только если она задана в inventory.
-# На одной машине это единственный способ не дать генератору отбирать ядра
-# у системы под тестом.
+# Pinning the generator to cores — only if it is set in the inventory.
+# On a single machine this is the only way to stop the generator from stealing cores
+# from the system under test.
 bench_loadgen_cpuset_argv: "{{ ['--cpuset-cpus=' ~ loadgen_cpuset] if loadgen_cpuset | default('') else [] }}"

@@ -1,24 +1,24 @@
 ---
-# Измерение скорости разбора очереди в отрыве от приёма.
+# Measuring queue drain rate in isolation from ingress.
 #
-# Очередь набивается заранее при остановленных воркерах, затем ингресс молчит
-# и всё железо достаётся доставке. Знаменатель скорости известен точно, а длину
-# очереди можно задавать: оба горячих запроса воркера не покрыты индексами,
-# поэтому стоимость разбора зависит от длины очереди, и измерение на пустой
-# очереди относится к случаю, которого в проде не бывает.
+# The queue is filled in advance while the workers are stopped, then ingress stays silent
+# and all the hardware goes to delivery. The denominator of the rate is known exactly, and the
+# queue length can be set: both hot worker queries are not covered by indexes,
+# so the cost of dequeuing depends on the queue length, and a measurement on an empty
+# queue describes a case that does not occur in production.
 #
-# Плейбук НЕидемпотентен по замыслу и не входит в критерий повторяемости.
+# The playbook is NON-idempotent by design and is not part of the repeatability criterion.
 
-- name: Собрать факты со всех хостов
+- name: Gather facts from all hosts
   hosts: all
   gather_facts: true
   tasks: []
 
-- name: Присвоить идентификатор прогона
+- name: Assign the run identifier
   hosts: all
   gather_facts: false
   tasks:
-    - name: Взять время живыми часами
+    - name: Take the time from a live clock
       ansible.builtin.command:
         argv: [date, -u, "+%Y%m%dT%H%M%SZ"]
       delegate_to: localhost
@@ -26,25 +26,25 @@
       changed_when: false
       register: run_clock
 
-    - name: Зафиксировать идентификатор прогона
+    - name: Pin the run identifier
       ansible.builtin.set_fact:
         bench_run_id: >-
           {{ lookup('env', 'BENCH_RUN_ID') | default('drain-' ~ (run_clock.stdout | trim), true) }}
 
-- name: Подготовить состояние перед прогоном
+- name: Prepare the state before the run
   ansible.builtin.import_playbook: reset.yml
 
-- name: Остановить воркеры доставки
+- name: Stop the delivery workers
   hosts: postal_workers
   become: true
   tasks:
-    - name: Перевести воркеры в остановленное состояние
+    - name: Move the workers to the stopped state
       ansible.builtin.include_role:
         name: bench_workers
       vars:
         bench_workers_state: stopped
 
-- name: Набить очередь и измерить дренаж
+- name: Fill the queue and measure the drain
   hosts: postal_main_db:postal_workers:postal_smtp:postfix_sinks:load_generators
   become: true
   vars:
@@ -59,22 +59,22 @@
       vars:
         bench_samplers_state: stopped
 
-- name: Собрать отчёт
+- name: Collect the report
   hosts: postal_main_db
   become: true
   vars:
     db_host: "{{ groups['postal_main_db'] | first }}"
     bench_report_kind: drain
     postal_seed: "{{ hostvars[groups['postal_admin'] | first].postal_seed }}"
-    # Факт живёт только в кэше: его ставит роль postal_image при развёртывании.
-    # Прогон не должен падать из-за пустого кэша — фактически запущенный образ
-    # отчёт всё равно читает с хоста через docker inspect, и это достовернее.
+    # The fact only lives in the cache: it is set by the postal_image role during deployment.
+    # A run must not fail because of an empty cache — the report reads the actually running
+    # image from the host via docker inspect anyway, and that is more reliable.
     postal_image_resolved: >-
       {{ hostvars[groups['postal_workers'] | first].postal_image_resolved
-         | default('не определён: кэш фактов пуст, см. фактически запущенный образ', true) }}
-    # Окно сверки охватывает и набивку: письма создаются в ней, а не во время
-    # дренажа, поэтому выборка по одному лишь времени дренажа не нашла бы
-    # в messages ни одной строки.
+         | default('undetermined: the fact cache is empty, see the actually running image', true) }}
+    # The reconciliation window covers the prefill as well: the messages are created there, not
+    # during the drain, so a selection based on the drain time alone would find
+    # no rows in messages at all.
     bench_window_start: "{{ hostvars[db_host].bench_prefill_start }}"
     bench_window_end: "{{ hostvars[db_host].bench_drain_end }}"
     bench_queue_total: "{{ hostvars[db_host].bench_queue_total }}"
@@ -89,5 +89,6 @@
     bench_drain_queue_left: "{{ hostvars[db_host].bench_drain_queue_left }}"
     bench_drain_in_flight: "{{ hostvars[db_host].bench_drain_in_flight }}"
     bench_drain_delivered: "{{ hostvars[db_host].bench_drain_delivered }}"
+    bench_drain_sources: "{{ hostvars[db_host].bench_drain_sources }}"
   roles:
     - bench_report

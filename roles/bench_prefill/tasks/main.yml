@@ -1,18 +1,18 @@
 ---
-# Набивка очереди перед измерением дренажа.
+# Filling the queue before the drain measurement.
 #
-# Письма создаются штатным путём — через HTTP API при остановленных воркерах,
-# а не вставкой строк в БД. Прямой SQL пришлось бы воспроизводить руками строку
-# в messages, две longblob-строки посуточной raw-таблицы и строку очереди
-# со всеми связями; любая неточность там выглядела бы как результат измерения.
-# Плата за честность — время: набивка идёт со скоростью приёма.
+# Messages are created the normal way — through the HTTP API with the workers stopped,
+# not by inserting rows into the DB. Raw SQL would have to reproduce by hand a row
+# in messages, two longblob rows of the per-day raw table and a queue row
+# with all its associations; any inaccuracy there would look like a measurement result.
+# The price of honesty is time: the fill proceeds at the ingress rate.
 #
-# Роль НЕидемпотентна по замыслу: каждый вызов добавляет письма к очереди.
+# The role is NON-idempotent by design: every call adds messages to the queue.
 
-# Отметка нужна как нижняя граница окна сверки: письма создаются здесь,
-# а не во время дренажа, поэтому выборка по времени дренажа не нашла бы ни одной
-# строки в messages, и сверка показала бы полную недостачу.
-- name: Отметить начало набивки
+# The timestamp is needed as the lower bound of the reconciliation window: messages are created
+# here, not during the drain, so a selection by the drain time would find no
+# rows in messages, and the reconciliation would show a complete shortfall.
+- name: Record the start of the fill
   ansible.builtin.command:
     argv: [date, -u, +%s]
   delegate_to: "{{ groups['postal_main_db'] | first }}"
@@ -20,12 +20,12 @@
   changed_when: false
   register: prefill_clock_start
 
-- name: Зафиксировать начало набивки
+- name: Pin the start of the fill
   ansible.builtin.set_fact:
     bench_prefill_start: "{{ prefill_clock_start.stdout | trim }}"
   run_once: true
 
-- name: Набить очередь письмами
+- name: Fill the queue with messages
   ansible.builtin.command:
     argv: >-
       {{ bench_loadgen_argv + bench_loadgen_cpuset_argv
@@ -39,7 +39,7 @@
   run_once: true
   changed_when: true
 
-- name: Измерить фактическую длину очереди
+- name: Measure the actual queue length
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -52,11 +52,11 @@
   delegate_to: "{{ groups['postal_main_db'] | first }}"
   run_once: true
 
-# Расхождение больше допуска означает, что часть писем не дошла до очереди:
-# либо приём отказывал, либо воркер всё-таки работал и успел их разобрать.
-# И то и другое делает измерение дренажа бессмысленным, потому что знаменатель
-# скорости неизвестен.
-- name: Проверить, что очередь набита ожидаемо
+# A discrepancy larger than the tolerance means that some messages never reached the queue:
+# either ingress was rejecting them, or a worker was running after all and managed to drain them.
+# Either way the drain measurement becomes meaningless, because the denominator
+# of the rate is unknown.
+- name: Check that the queue was filled as expected
   ansible.builtin.assert:
     that:
       - >-
@@ -64,12 +64,12 @@
          - (bench_prefill_recipients | int)) | abs
         <= (bench_prefill_recipients | int) * (bench_reconcile_tolerance | float)
     fail_msg: >-
-      В очереди {{ bench_prefill_actual.query_result[0][0].n }} строк вместо
-      {{ bench_prefill_recipients }}. Набивка не удалась: проверьте, что воркеры
-      остановлены и что приём не отвергал письма.
+      The queue holds {{ bench_prefill_actual.query_result[0][0].n }} rows instead of
+      {{ bench_prefill_recipients }}. The fill failed: check that the workers are
+      stopped and that ingress was not rejecting messages.
   run_once: true
 
-- name: Найти пороговый идентификатор для отложенной доли
+- name: Find the threshold identifier for the deferred share
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -86,12 +86,12 @@
   run_once: true
   when: (bench_prefill_deferred_share | float) > 0
 
-# Откладываются самые старые строки по первичному ключу: запрос захвата идёт
-# по нему без ORDER BY и останавливается на первой подходящей строке, поэтому
-# стоимость захвата определяется тем, сколько НЕподходящих строк лежит в голове
-# таблицы. Отложить случайные строки значило бы размазать их равномерно
-# и не воспроизвести вырождение очереди вовсе.
-- name: Перевести старые строки в отложенные
+# The oldest rows by primary key are deferred: the claim query walks
+# it without ORDER BY and stops at the first suitable row, so
+# the cost of the claim is determined by how many UNsuitable rows sit at the head of the
+# table. Deferring random rows would spread them evenly
+# and not reproduce queue degeneration at all.
+- name: Move the old rows to deferred
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -107,7 +107,7 @@
   run_once: true
   when: (bench_prefill_deferred_share | float) > 0
 
-- name: Зафиксировать состав очереди перед дренажем
+- name: Record the queue composition before the drain
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -126,14 +126,14 @@
   delegate_to: "{{ groups['postal_main_db'] | first }}"
   run_once: true
 
-- name: Раздать состав очереди фактом
+- name: Distribute the queue composition as a fact
   ansible.builtin.set_fact:
     bench_queue_total: "{{ bench_prefill_composition.query_result[0][0].total | int }}"
     bench_queue_ready: "{{ bench_prefill_composition.query_result[0][0].ready | int }}"
     bench_queue_deferred: "{{ bench_prefill_composition.query_result[0][0].deferred | int }}"
   run_once: true
 
-- name: Забрать сводку набивки
+- name: Fetch the fill summary
   ansible.builtin.fetch:
     src: "{{ loadgen_results_dir }}/{{ bench_run_id }}-prefill-summary.json"
     dest: "{{ bench_reports_dir }}/{{ bench_run_id }}/"

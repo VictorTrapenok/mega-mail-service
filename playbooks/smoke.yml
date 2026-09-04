@@ -1,42 +1,42 @@
 ---
-# Smoke-тест: письмо прошло генератор → Postal → приёмник → discard,
-# и при этом ничего не ушло наружу.
+# Smoke test: a message travelled generator → Postal → sink → discard,
+# and nothing escaped to the outside in the process.
 #
-# Обе проверки привязаны к КОНКРЕТНОМУ отправленному письму. Grep по всему
-# логу без метки проходил бы на любом стенде, который когда-либо что-то
-# доставил, — то есть доказывал бы только то, что стенд не новый.
+# Both checks are tied to a SPECIFIC sent message. A grep over the whole
+# log without a marker would pass on any bench that has ever delivered
+# anything — i.e. it would only prove that the bench is not brand new.
 
-- name: Собрать факты со всех хостов
+- name: Gather facts from all hosts
   hosts: all
   gather_facts: true
   tasks: []
 
-- name: Подготовить метку прогона
+- name: Prepare the run marker
   hosts: localhost
   gather_facts: false
   tasks:
-    - name: Сгенерировать метку
+    - name: Generate the marker
       ansible.builtin.set_fact:
-        # Скобки обязательны: фильтр связывает крепче возведения в степень,
-        # и без них выражение читалось бы как 10 ** (9 | random).
+        # The parentheses are mandatory: the filter binds tighter than exponentiation,
+        # and without them the expression would read as 10 ** (9 | random).
         smoke_tag: "smoke{{ (10 ** 9) | random }}"
 
-- name: Проверить сквозной путь письма
+- name: Check the end-to-end path of a message
   hosts: load_generators
   become: true
   vars:
     postal_seed: "{{ hostvars[groups['postal_admin'] | first].postal_seed }}"
     smoke_tag: "{{ hostvars['localhost'].smoke_tag }}"
   tasks:
-    - name: Отправить письмо через HTTP API
+    - name: Send a message via the HTTP API
       ansible.builtin.uri:
         url: "http://{{ postal_api_addr }}/api/v1/send/message"
         method: POST
         headers:
           X-Server-API-Key: "{{ postal_seed.api_key }}"
           Content-Type: application/json
-          # Postal делает config.hosts << web_hostname, а непустой config.hosts
-          # включает host authorization Rails: запрос по IP-адресу получает 403.
+          # Postal does config.hosts << web_hostname, and a non-empty config.hosts
+          # enables Rails host authorization: a request by IP address gets a 403.
           Host: "{{ postal_web_hostname }}"
         body_format: json
         body:
@@ -47,14 +47,14 @@
         status_code: 200
       register: smoke_send
 
-    # Postal отвечает HTTP 200 и на ошибку тоже: в теле приходит
-    # status: "error". Проверять код ответа недостаточно.
-    - name: Убедиться, что письмо принято
+    # Postal answers with HTTP 200 on errors as well: the body then carries
+    # status: "error". Checking the response code is not enough.
+    - name: Make sure the message was accepted
       ansible.builtin.assert:
         that: smoke_send.json.status == "success"
-        fail_msg: "Postal не принял письмо: {{ smoke_send.json }}"
+        fail_msg: "Postal did not accept the message: {{ smoke_send.json }}"
 
-    - name: Отправить письмо на реальный публичный домен
+    - name: Send a message to a real public domain
       ansible.builtin.uri:
         url: "http://{{ postal_api_addr }}/api/v1/send/message"
         method: POST
@@ -71,13 +71,13 @@
         status_code: 200
       register: smoke_escape
 
-- name: Проверить доставку в приёмник
+- name: Check delivery into the sink
   hosts: postfix_sinks
   become: true
   vars:
     smoke_tag: "{{ hostvars['localhost'].smoke_tag }}"
   tasks:
-    - name: Дождаться доставки ИМЕННО этого письма
+    - name: Wait for the delivery of THIS PARTICULAR message
       ansible.builtin.shell:
         cmd: >-
           grep -c 'to=<{{ smoke_tag }}-lab@' {{ postfix_sink_log }} || true
@@ -89,9 +89,9 @@
       delay: 2
       changed_when: false
 
-    # Письмо публичному домену не должно дойти никуда: внутренний DNS
-    # не резолвит внешние MX, поэтому доставка обрывается ещё до соединения.
-    - name: Убедиться, что письмо публичному домену НЕ доставлено
+    # The message to the public domain must not reach anywhere: the internal DNS
+    # does not resolve external MX records, so delivery breaks before any connection.
+    - name: Make sure the message to the public domain was NOT delivered
       ansible.builtin.shell:
         cmd: >-
           grep -c 'to=<{{ smoke_tag }}-escape@' {{ postfix_sink_log }} || true
@@ -101,14 +101,14 @@
       changed_when: false
       failed_when: (sink_escape_hits.stdout | trim | int) > 0
 
-# Шаблон групп записан литералом: поле hosts разбирается до загрузки
-# group_vars, поэтому переменная containment_hosts там ещё не существует.
-# Набор совпадает с плеем изоляции в site.yml.
-- name: Проверить, что наружу ничего не ушло
+# The group pattern is written out as a literal: the hosts field is parsed before
+# group_vars are loaded, so the containment_hosts variable does not yet exist there.
+# The set matches the containment play in site.yml.
+- name: Check that nothing escaped to the outside
   hosts: postal_web:postal_smtp:postal_workers:postfix_sinks
   become: true
   tasks:
-    - name: Прочитать счётчик попыток исходящего SMTP
+    - name: Read the outbound SMTP attempt counter
       ansible.builtin.shell:
         cmd: >-
           nft -j list counter inet mailguard smtp_escape_attempts
@@ -118,16 +118,16 @@
       register: escape_packets
       changed_when: false
 
-    # Нечитаемый счётчик — это не ноль. Отсутствие правил изоляции обязано
-    # валить проверку, а не выглядеть как её успешное прохождение.
-    - name: Убедиться, что счётчик существует и равен нулю
+    # An unreadable counter is not a zero. Missing containment rules must
+    # fail the check, not look like it passed successfully.
+    - name: Make sure the counter exists and equals zero
       ansible.builtin.assert:
         that:
           - escape_packets.rc == 0
           - (escape_packets.stdout | trim | int) == 0
         fail_msg: >-
-          На {{ inventory_hostname }} счётчик утечек равен
-          «{{ escape_packets.stdout | trim }}» (код {{ escape_packets.rc }}).
-          Либо письмо пыталось уйти в интернет, либо правил изоляции
-          на хосте нет вовсе — прогоны запускать нельзя, пока причина
-          не найдена.
+          On {{ inventory_hostname }} the leak counter equals
+          "{{ escape_packets.stdout | trim }}" (rc {{ escape_packets.rc }}).
+          Either a message tried to escape to the internet, or there are no
+          containment rules on the host at all — runs must not be started until
+          the cause is found.

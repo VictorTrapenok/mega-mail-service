@@ -1,5 +1,5 @@
 ---
-# Пакеты, нужные плейбукам и сборщику отчёта на всех хостах стенда.
+# Packages required by the playbooks and the report builder on all bench hosts.
 common_packages:
   - ca-certificates
   - curl
@@ -9,20 +9,20 @@ common_packages:
   - dnsutils
   - nftables
 
-# Синхронизация времени. Латентность считается как разница отметок,
-# снятых на РАЗНЫХ машинах, поэтому расхождение часов превращается
-# в систематическую ошибку измерения и может давать отрицательные значения,
-# которые потом молча отбрасываются, смещая распределение.
+# Time synchronisation. Latency is computed as the difference between timestamps
+# taken on DIFFERENT machines, so a clock skew turns into
+# a systematic measurement error and can produce negative values,
+# which are then silently discarded, shifting the distribution.
 common_ntp_servers:
   - "pool.ntp.org"
 common_clock_offset_max_ms: 5
 
-# Сетевые лимиты генератора и sink'а.
+# Network limits of the generator and the sink.
 #
-# При дефолтном ip_local_port_range доступно около 28 000 портов, а TIME_WAIT
-# держит сокет 60 с. Без переиспользования соединений это упирает устойчивую
-# скорость новых подключений к одной паре адрес:порт примерно в 470/с —
-# и выглядит это ровно как отказ Postal принимать соединения.
+# With the default ip_local_port_range about 28,000 ports are available, while TIME_WAIT
+# holds a socket for 60 s. Without connection reuse this caps the sustained
+# rate of new connections to a single address:port pair at roughly 470/s —
+# and that looks exactly like Postal refusing to accept connections.
 common_sysctls:
   net.ipv4.ip_local_port_range: "10240 65535"
   net.ipv4.tcp_tw_reuse: "1"

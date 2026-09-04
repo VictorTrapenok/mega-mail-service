@@ -12,16 +12,16 @@ docker_packages:
   - docker-buildx-plugin
   - docker-compose-plugin
 
-# Фиксация версий выключена по умолчанию, чтобы первое развёртывание
-# не падало из-за исчезнувшей из репозитория версии.
+# Version pinning is disabled by default so that the first deployment
+# does not fail because a version disappeared from the repository.
 #
-# Включить СТОИТ, как только стенд заработает: Compose 5.2.0 заменил алгоритм
-# сверки состояния, 5.5.0 предупреждает о разовом пересоздании контейнеров после
-# обновления, а community.docker разбирает вывод Compose CLI, формат которого
-# документирован как нестабильный. Обновление посреди серии прогонов
-# пересоздаст контейнеры и обнулит счётчики.
+# It IS worth enabling as soon as the bench works: Compose 5.2.0 replaced the state
+# reconciliation algorithm, 5.5.0 warns about a one-off container recreation after
+# an upgrade, and community.docker parses the output of the Compose CLI, whose format
+# is documented as unstable. An upgrade in the middle of a series of runs
+# will recreate the containers and reset the counters.
 #
-# Фактические установленные версии всё равно попадают в отчёт о прогоне.
+# The actually installed versions end up in the run report regardless.
 docker_pin_versions: false
 docker_pinned_versions:
   docker-ce: "5:29.7.2-1~ubuntu.24.04~noble"
@@ -30,8 +30,8 @@ docker_pinned_versions:
   docker-buildx-plugin: "0.36.1-1~ubuntu.24.04~noble"
   docker-compose-plugin: "5.5.0-1~ubuntu.24.04~noble"
 
-# Драйвер json-file пишет синхронно и на нагруженном sink'е становится
-# узким местом раньше, чем Postfix. Ограничиваем и размер, и ротацию.
+# The json-file driver writes synchronously and on a loaded sink becomes
+# a bottleneck before Postfix does. We limit both the size and the rotation.
 docker_log_driver: "local"
 docker_log_max_size: "64m"
 docker_log_max_file: "3"

@@ -1,15 +1,14 @@
 ---
-# Один измеряемый прогон: сэмплеры -> прогрев -> нагрузка -> дренаж.
+# A single measured run: samplers -> warm-up -> load -> drain.
 #
-# Эта роль НЕидемпотентна по замыслу. Протокол сравнения требует одинакового
-# стартового состояния перед каждым прогоном, поэтому reset.yml запускается
-# отдельно и до неё.
+# This role is NON-idempotent by design. The comparison protocol requires an identical
+# starting state before every run, so reset.yml is executed separately and before it.
 #
-# Прогрев и рабочая фаза — ДВА отдельных запуска генератора. Иначе итоговая
-# сводка k6 содержала бы сумму обеих фаз, а окно измерения и запрос сверки
-# покрывали бы только вторую, и «принято» никогда не сошлось бы с «доставлено».
+# The warm-up and the working phase are TWO separate generator invocations. Otherwise the final
+# k6 summary would contain the sum of both phases, while the measurement window and the
+# reconciliation query would cover only the second, and "accepted" would never match "delivered".
 
-- name: Прогрев
+- name: Warm-up
   ansible.builtin.command:
     argv: >-
       {{ bench_loadgen_argv + bench_loadgen_cpuset_argv
@@ -20,12 +19,12 @@
   run_once: true
   changed_when: true
 
-# --- Начало окна измерения ------------------------------------------------
-# Время берётся живыми часами на хосте основной БД, а не из ansible_date_time:
-# тот факт снимается один раз при сборе фактов и в течение плея не меняется,
-# из-за чего окно получалось бы отрицательным, а запрос сверки не находил бы
-# ни одной строки. Часы именно того хоста, чьи отметки времени фильтруются.
-- name: Отметить начало окна измерения
+# --- Start of the measurement window --------------------------------------
+# The time is taken from a live clock on the main DB host rather than from ansible_date_time:
+# that fact is captured once during fact gathering and does not change during the play,
+# which would make the window negative and the reconciliation query find
+# no rows at all. It is the clock of exactly the host whose timestamps are filtered.
+- name: Record the start of the measurement window
   ansible.builtin.command:
     argv: [date, -u, +%s]
   delegate_to: "{{ groups['postal_main_db'] | first }}"
@@ -33,7 +32,7 @@
   changed_when: false
   register: clock_start
 
-- name: Снять счётчик доставок приёмника до окна
+- name: Read the sink delivery counter before the window
   ansible.builtin.shell:
     cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
   args:
@@ -44,13 +43,13 @@
   changed_when: false
   register: sink_before
 
-- name: Зафиксировать начало окна
+- name: Pin the start of the window
   ansible.builtin.set_fact:
     bench_window_start: "{{ clock_start.stdout | trim }}"
     bench_sink_before: "{{ sink_before.results | map(attribute='stdout') | map('trim') | map('int') | sum }}"
   run_once: true
 
-- name: Рабочая нагрузка
+- name: Working load
   ansible.builtin.command:
     argv: >-
       {{ bench_loadgen_argv + bench_loadgen_cpuset_argv
@@ -62,7 +61,7 @@
   changed_when: true
   register: loadgen_result
 
-- name: Отметить конец окна измерения
+- name: Record the end of the measurement window
   ansible.builtin.command:
     argv: [date, -u, +%s]
   delegate_to: "{{ groups['postal_main_db'] | first }}"
@@ -70,7 +69,7 @@
   changed_when: false
   register: clock_end
 
-- name: Снять счётчик доставок приёмника после окна
+- name: Read the sink delivery counter after the window
   ansible.builtin.shell:
     cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
   args:
@@ -81,15 +80,15 @@
   changed_when: false
   register: sink_after_load
 
-- name: Зафиксировать конец окна
+- name: Pin the end of the window
   ansible.builtin.set_fact:
     bench_window_end: "{{ clock_end.stdout | trim }}"
   run_once: true
 
-# Дренаж: ингресс остановлен (генератор отработал), ждём опустошения очереди.
-# Время дренажа — самостоятельный результат: оно показывает, успевает ли
-# доставка за приёмом.
-- name: Дождаться опустошения очереди
+# Drain: ingress is stopped (the generator has finished), we wait for the queue to empty.
+# The drain time is a result in its own right: it shows whether
+# delivery keeps up with ingress.
+- name: Wait for the queue to empty
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -101,15 +100,15 @@
   until: (drain_check.query_result[0][0].n | int) == 0
   retries: "{{ ((bench_drain_timeout_s | int) / 10) | int }}"
   delay: 10
-  # Незавершившийся дренаж — это РЕЗУЛЬТАТ, а не сбой: он означает, что
-  # доставка не поспевает за приёмом. Поэтому прогон не роняем, но и не
-  # выдаём за успешный: факт попадает в отчёт отдельной строкой.
+  # An unfinished drain is a RESULT, not a failure: it means that
+  # delivery does not keep up with ingress. So we neither fail the run nor
+  # present it as successful: the fact goes into the report as a separate line.
   failed_when: false
   changed_when: false
   run_once: true
   delegate_to: "{{ groups['postal_main_db'] | first }}"
 
-- name: Отметить конец дренажа
+- name: Record the end of the drain
   ansible.builtin.command:
     argv: [date, -u, +%s]
   delegate_to: "{{ groups['postal_main_db'] | first }}"
@@ -117,7 +116,7 @@
   changed_when: false
   register: clock_drain
 
-- name: Снять счётчик доставок приёмника после дренажа
+- name: Read the sink delivery counter after the drain
   ansible.builtin.shell:
     cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
   args:
@@ -128,14 +127,14 @@
   changed_when: false
   register: sink_after_drain
 
-- name: Зафиксировать итоги прогона
+- name: Pin the run results
   ansible.builtin.set_fact:
     bench_drain_end: "{{ clock_drain.stdout | trim }}"
     bench_drained: "{{ (drain_check.query_result[0][0].n | int) == 0 }}"
     bench_queue_left_after_drain: "{{ drain_check.query_result[0][0].n | int }}"
-    # Доставку считаем ОКНОМ, а не всем логом: иначе в неё попадали бы
-    # прогрев и остатки предыдущих прогонов, и независимая проверка доставки
-    # имела бы встроенное расхождение с оконной выборкой из БД.
+    # Delivery is counted over the WINDOW rather than over the whole log: otherwise it would
+    # include the warm-up and leftovers from previous runs, and the independent delivery check
+    # would carry a built-in discrepancy against the windowed selection from the DB.
     bench_delivered: >-
       {{ (sink_after_drain.results | map(attribute='stdout')
           | map('trim') | map('int') | sum) - (bench_sink_before | int) }}
@@ -144,7 +143,7 @@
           | map('trim') | map('int') | sum) - (bench_sink_before | int) }}
   run_once: true
 
-- name: Забрать сводки генератора
+- name: Fetch the generator summaries
   ansible.builtin.fetch:
     src: "{{ loadgen_results_dir }}/{{ bench_run_id }}-{{ item }}-summary.json"
     dest: "{{ bench_reports_dir }}/{{ bench_run_id }}/"

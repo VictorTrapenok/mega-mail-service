@@ -1,141 +1,144 @@
 # Roadmap
 
-## Не доделано в текущей итерации
+## Not completed in the current iteration
 
-Осознанно отложено ради того, чтобы быстрее получить базу. Порядок примерно
-соответствует приоритету.
+Deliberately deferred in order to obtain the baseline sooner. The order roughly
+corresponds to priority.
 
-### Измерения
+### Measurements
 
-- **Набивка очереди сверх сотни тысяч строк.** Сейчас `bench_prefill` набивает
-  очередь штатным путём — через API при остановленных воркерах, и это упирается
-  в скорость приёма: сотня тысяч строк занимает порядка часа, миллион —
-  почти сутки. Для профилей в миллионы строк нужен bulk-путь через SQL,
-  воспроизводящий строку `messages`, две longblob-строки посуточной raw-таблицы
-  и строку очереди со всеми связями, плюс обязательная проверка, что после
-  такой набивки доставка идёт штатно и сверка сходится. Пока этого нет,
-  измеримый диапазон длин очереди ограничен примерно 10⁵.
-- **Профили состава очереди помимо отложенной доли.** Реализована доля строк
-  с `retry_after` в будущем. Не воспроизводятся: чужой `ip_address_id`
-  (требует включённых пулов и нескольких адресов) и распределение `attempts`,
-  влияющее на интервалы повторов.
-- **Серия прогонов и шумовой пол.** Сейчас `benchmark.yml` делает один прогон.
-  Нужен `campaign.yml`: чередование `baseline → candidate → baseline`,
-  не меньше трёх повторов, медиана и разброс, и отказ объявлять победой
-  прирост в пределах разброса.
-- **Сравнение двух отчётов** скриптом с явным вердиктом, включая
-  «различие неотличимо от шума».
-- **Ступенчатая нагрузка** для поиска максимальной устойчивой скорости:
-  сейчас скорость задаётся вручную. Практическая нужда подтверждена: предел
-  приёма на текущем стенде лежит между 15 и 58 rcpt/s, и найден он был
-  двумя прогонами вслепую.
-- **Калибровка не проверяет генератор, только приёмник.** `calibrate.yml`
-  гонит `smtp-source` — дешёвую C-программу — прямо в Postfix и делает вывод
-  о запасе вспомогательной цепи. Но подаёт нагрузку k6, который сериализует
-  стокилобайтный JSON на каждое письмо, и его собственный потолок калибровка
-  не измеряет вовсе. На прогоне это выглядело результатом Postal: генератор
-  упирался в свои два ядра при 27 rcpt/s. Нужен второй арм калибровки —
-  генератором по целевому профилю в заведомо быстрый приёмник, с отказом
-  начинать прогон, если сам генератор не держит цель с двукратным запасом.
+- **Filling the queue beyond a hundred thousand rows.** At the moment `bench_prefill` fills
+  the queue the normal way — through the API with the workers stopped, and this is limited
+  by the ingress rate: a hundred thousand rows take on the order of an hour, a million
+  almost a day. Profiles of millions of rows need a bulk path through SQL,
+  reproducing the `messages` row, the two longblob rows of the per-day raw table
+  and the queue row with all its associations, plus a mandatory check that after
+  such a fill delivery proceeds normally and the reconciliation adds up. Until that exists,
+  the measurable range of queue lengths is limited to roughly 10⁵.
+- **Queue composition profiles besides the deferred share.** The share of rows
+  with `retry_after` in the future is implemented. Not reproduced: a foreign `ip_address_id`
+  (requires pools enabled and several addresses) and the distribution of `attempts`,
+  which affects the retry intervals.
+- **A series of runs and the noise floor.** At the moment `benchmark.yml` performs a single run.
+  A `campaign.yml` is needed: alternating `baseline → candidate → baseline`,
+  at least three repeats, the median and the spread, and a refusal to declare a win
+  for a gain within the spread.
+- **Comparison of two reports** by a script with an explicit verdict, including
+  "the difference is indistinguishable from noise".
+- **Stepped load** for finding the maximum sustained rate:
+  at the moment the rate is set by hand. The practical need is confirmed: the ingress
+  limit on the current bench lies between 15 and 58 rcpt/s, and it was found
+  by two blind runs.
+- **Calibration does not check the generator, only the sink.** `calibrate.yml`
+  drives `smtp-source` — a cheap C program — straight into Postfix and draws a conclusion
+  about the auxiliary chain's headroom. But the load is applied by k6, which serialises
+  a hundred-kilobyte JSON per message, and calibration does not measure its own ceiling
+  at all. In a run this looked like a Postal result: the generator
+  topped out on its two cores at 27 rcpt/s. A second calibration arm is needed —
+  the generator running the target profile into a knowingly fast sink, refusing to
+  start a run if the generator itself cannot sustain the target with twofold headroom.
 
-### Достоверность
+### Credibility
 
-- **Инжекция отказов SMTP.** Профили `421/450/451`, `550/551/552`, медленный
-  баннер, разрыв соединения, отказ TLS, неоднозначный разрыв после `DATA`.
-  Без них путь повторов, отложенной доставки и подавления не нагружается
-  вообще. Учесть, что в Postal `553` и `500–504` — это SoftFail.
-- **Задержка на стороне приёмника.** Сейчас он принимает почти мгновенно,
-  что систематически завышает результат: реальные MX держат соединение
-  сотнями миллисекунд и ограничивают конкурентность.
-- **Детектор дублей.** Сравнение общего числа принятых приёмником
-  с числом различных `X-Postal-MsgID`. Одинаковое имя хоста у контейнеров
-  воркеров приводит к разбору чужих батчей; сейчас имена разведены,
-  но это защита, а не проверка.
-- **Полная матрица нагрузки**: размеры MIME 10 КБ / 1 МБ, 10 и 50 получателей
-  на письмо, кардинальность доменов 1 / 10 000, tracking и webhooks.
-- **Флаги `tracking` и `webhooks` в профиле ни на что не влияют.** Они
-  объявлены в `bench_profiles`, но не проброшены ни в сидирование, ни в конфиг:
-  фактически выключены потому, что `postal_seed` не создаёт ни `TrackDomain`,
-  ни `Webhook`. На проде tracking пишет строку в `links` на каждую ссылку,
-  а webhook — HTTP POST из того же воркера, и оба пути не нагружены вовсе.
-  Либо реализовать, либо убрать флаги, чтобы отчёт не заявлял того, чего нет.
-- **STARTTLS на исходящей доставке отсутствует.** Приёмник не объявляет TLS,
-  и Postal при `ssl_mode: Auto` отдаёт письмо в открытом виде. Реальная
-  доставка почти всегда шифрованная: это handshake на соединение плюс
-  шифрование тела, порядка 5–15 % CPU воркера.
-- **`send_limit` снят сидированием** (`send_limit: nil`), поэтому учёт лимита
-  отправки на каждую доставку не выполняется — а это `UPDATE` одной строки
-  `servers` на письмо, то есть одна из точек сериализации.
-- **Бинлог MariaDB выключен**, запись на диск примерно вдвое меньше, чем у любой
-  инсталляции с репликацией. Сейчас не лимитирует, но занижает профиль I/O.
-- **Потолок конкурентности доставки — 2** (одна реплика × два потока). При нём
-  ни один ресурс не насыщается, и «ничего не упёрлось» в отчёте означает лишь,
-  что упёрлись в это число. Нужна серия по конкурентности с наблюдением
-  за row locks и пулом подключений.
+- **SMTP fault injection.** Profiles `421/450/451`, `550/551/552`, a slow
+  banner, a dropped connection, a TLS refusal, an ambiguous drop after `DATA`.
+  Without them the retry, deferred delivery and suppression paths are not exercised
+  at all. Take into account that in Postal `553` and `500–504` are SoftFail.
+- **Per-IP concurrency limits on the sink side.** The network latency itself is now
+  modelled — `postfix_sink_response_delay_ms` shapes outgoing packets from port 25 with
+  tc netem, and it turned out to overstate draining sevenfold when absent. What is still
+  missing is the second half of real MX behaviour: a cap on concurrent sessions per source
+  address, greylisting and throttling by volume. Without it the measured concurrency of 32
+  looks attainable from a single IP, which no real provider allows.
+- **A duplicate detector.** Comparing the total number accepted by the sink
+  with the number of distinct `X-Postal-MsgID` values. Identical hostnames on the worker
+  containers lead to picking up each other's batches; the names are currently distinct,
+  but that is a safeguard, not a check.
+- **A full load matrix**: MIME sizes of 10 KB / 1 MB, 10 and 50 recipients
+  per message, domain cardinality 1 / 10,000, tracking and webhooks.
+- **The `tracking` and `webhooks` flags in the profile have no effect.** They are
+  declared in `bench_profiles` but are wired neither into the seeding nor into the config:
+  they are effectively disabled because `postal_seed` creates neither a `TrackDomain`
+  nor a `Webhook`. In production, tracking writes a row into `links` for every link,
+  and a webhook is an HTTP POST from the same worker, and neither path is exercised at all.
+  Either implement them or remove the flags, so the report does not claim what is not there.
+- **STARTTLS on outbound delivery is absent.** The sink does not advertise TLS,
+  and with `ssl_mode: Auto` Postal hands the message over in the clear. Real
+  delivery is almost always encrypted: that is a handshake per connection plus
+  encryption of the body, on the order of 5–15 % of the worker's CPU.
+- **`send_limit` is removed by the seeding** (`send_limit: nil`), so send limit
+  accounting is not performed on each delivery — and that is an `UPDATE` of a single
+  `servers` row per message, i.e. one of the serialisation points.
+- **The MariaDB binlog is disabled**, so disk writes are roughly half those of any
+  installation with replication. It is not limiting at present, but it understates the I/O profile.
+- **The delivery concurrency ceiling is 2** (one replica × two threads). At that level
+  no resource is saturated, and "nothing topped out" in the report only means
+  that we topped out at that number. A series across concurrency levels is needed, with
+  observation of row locks and the connection pool.
 
-### Диагностика
+### Diagnostics
 
-- **Профилирование Ruby.** rbspy с хоста, а не из контейнера: `bin/postal`
-  не делает `exec`, поэтому PID 1 — это bash, и нужен `--pid` из
-  `docker inspect` вместе с `--subprocesses`. Учесть, что rbspy видит только
-  поток, удерживающий GVL, и потому систематически недооценивает потоки,
-  заблокированные на вводе-выводе.
-- **Диагностика MariaDB**: окно slow-log с `log_slow_verbosity=query_plan,explain`,
-  `performance_schema` (его consumers задаются только опциями старта),
-  отношение `SUM_ROWS_EXAMINED / COUNT_STAR` по дайджесту запроса захвата
-  очереди — прямое фальсифицируемое свидетельство полного перебора.
-- **Prometheus и экспортеры** — когда шести чисел перестанет хватать.
-  Отдельно: SQL-экспортер вместо CSV-сэмплера.
+- **Ruby profiling.** rbspy from the host rather than from the container: `bin/postal`
+  does not `exec`, so PID 1 is bash, and `--pid` from
+  `docker inspect` is needed together with `--subprocesses`. Take into account that rbspy sees only
+  the thread holding the GVL and therefore systematically underestimates threads
+  blocked on I/O.
+- **MariaDB diagnostics**: a slow-log window with `log_slow_verbosity=query_plan,explain`,
+  `performance_schema` (whose consumers can only be set via startup options),
+  the `SUM_ROWS_EXAMINED / COUNT_STAR` ratio for the digest of the queue claim
+  query — direct falsifiable evidence of a full scan.
+- **Prometheus and exporters** — once six numbers stop being enough.
+  Separately: an SQL exporter instead of the CSV sampler.
 
-### Возможности стенда
+### Bench capabilities
 
-- **IP pools как измеряемый вариант.** Механика уже учтена (host-сеть,
-  назначение адресов, сидирование пулов), но отдельного arm'а и проверок
-  привязки нет. Требует нескольких адресов на машине.
-- **Сборка своих образов** из git-ref с локальным registry и тегом по SHA
-  коммита — контур для сравнения собственных сборок.
-- **Шардирование на N независимых инсталляций** как контрольный эксперимент.
-  Обе подтверждённые точки сериализации — глобальная строка `statistics`
-  и общая очередь — находятся на уровне инсталляции, поэтому это может
-  оказаться самым дешёвым способом достичь цели, и проверить его стоит
-  до любого переписывания воркера.
-- **Обработка отказов и возвратов** (bounce, return-path): сейчас приёмник
-  всё выбрасывает, и входящий путь не нагружен вовсе.
+- **IP pools as a measured variant.** The mechanics are already accounted for (host networking,
+  address assignment, seeding of pools), but there is no separate arm and no binding
+  checks. Requires several addresses on a machine.
+- **Building our own images** from a git ref with a local registry and a tag based on the commit
+  SHA — an environment for comparing our own builds.
+- **Sharding across N independent installations** as a control experiment.
+  Both confirmed serialisation points — the global `statistics` row
+  and the shared queue — sit at the installation level, so this may
+  turn out to be the cheapest way to reach the target, and it is worth checking
+  before any rewrite of the worker.
+- **Handling of failures and returns** (bounce, return-path): at the moment the sink
+  discards everything, and the inbound path is not exercised at all.
 
-## Известные ограничения текущей реализации
+## Known limitations of the current implementation
 
-Найдены ревью, осознанно не закрыты — каждое либо не мешает получить базу,
-либо требует железа, которого пока нет.
+Found by review and deliberately left open — each of them either does not prevent obtaining
+the baseline or requires hardware that is not available yet.
 
-- **Прогоны не сериализованы.** Ничто не мешает запустить два `benchmark.yml`
-  одновременно на одном стенде или прогон без предварительной калибровки.
-  Нужен файловый замок и отметка о свежести калибровки.
-- **Сэмплер очереди сам создаёт нагрузку**: `COUNT(*)` по `queued_messages`
-  раз в 5 секунд на той же MariaDB, что и система под тестом. На длинной
-  очереди это полный перебор. Отмечено в отчёте как оговорка; правильное
-  решение — отдельный экспортер с более дешёвым запросом.
-- **Между прогонами переносится больше, чем сбрасывается.** `bench_reset`
-  чистит очередь, подавления, базу сообщений и логи, но не выравнивает
-  прогретость буферного пула, разметку табличных пространств и значения
-  AUTO_INCREMENT. Для серии из пяти повторов это нужно закрыть восстановлением
-  тома MariaDB из снимка.
-- **IP pools не проверены сквозным тестом.** Механика учтена (host-сеть,
-  сидирование пулов, HELO в зоне), но роли назначения адресов на интерфейс
-  и проверки соответствия «адрес в БД ↔ адрес на хосте» пока нет.
-- **Отчёт печатает переменные, а не фактическую конфигурацию контейнеров.**
-  Digest запущенного образа и переменные MariaDB вычитываются с хостов,
-  остальное берётся из `group_vars`. Расхождение возможно, если кто-то
-  правил конфигурацию вручную.
-- **Распределение по доменам квадратичное, а не Zipf**: доля самого горячего
-  домена ниже, чем при настоящем Zipf, поэтому батчинг Postal задействован
-  слабее реального. Названо в отчёте своим именем.
+- **Runs are not serialised.** Nothing prevents launching two `benchmark.yml`
+  runs simultaneously on one bench, or a run without prior calibration.
+  A file lock and a calibration freshness marker are needed.
+- **The queue sampler creates load itself**: a `COUNT(*)` over `queued_messages`
+  every 5 seconds on the same MariaDB as the system under test. On a long
+  queue this is a full scan. It is noted in the report as a caveat; the proper
+  solution is a separate exporter with a cheaper query.
+- **More carries over between runs than is reset.** `bench_reset`
+  clears the queue, the suppressions, the message database and the logs, but does not equalise
+  the buffer pool warmth, the tablespace layout and the AUTO_INCREMENT values.
+  For a series of five repeats this must be closed by restoring the MariaDB
+  volume from a snapshot.
+- **IP pools have not been verified end to end.** The mechanics are accounted for (host networking,
+  seeding of pools, HELO in the zone), but the roles for assigning addresses to the interface
+  and for checking the "address in the DB ↔ address on the host" correspondence do not exist yet.
+- **The report prints variables rather than the actual container configuration.**
+  The digest of the running image and the MariaDB variables are read back from the hosts,
+  everything else comes from `group_vars`. A discrepancy is possible if someone
+  edited the configuration by hand.
+- **The domain distribution is quadratic rather than Zipf**: the share of the hottest
+  domain is lower than with a true Zipf, so Postal's batching is exercised
+  less than in reality. It is called by its name in the report.
 
-## Открытые вопросы к заказчику
+## Open questions for the customer
 
-1. Где именно измерен текущий предел: приём Postal, рост очереди, попытки
-   соединения или подтверждённые ответы удалённых MX? От этого зависит,
-   воспроизводим мы предел приёма или предел доставки.
-2. Продовый feature mix: tracking, DKIM, webhooks, число почтовых серверов,
-   p95 размера MIME, получателей на письмо. Это фиксирует основной профиль.
-3. Хранение: 5 млн получателей при MIME 100 КБ — около 500 ГБ сырых данных
-   в сутки. Какой нужен retention.
+1. Where exactly was the current limit measured: Postal ingress, queue growth, connection
+   attempts, or confirmed responses from remote MX hosts? That determines whether
+   we are reproducing the ingress limit or the delivery limit.
+2. The production feature mix: tracking, DKIM, webhooks, the number of mail servers,
+   the p95 MIME size, recipients per message. This pins down the primary profile.
+3. Storage: 5M recipients at a MIME size of 100 KB is about 500 GB of raw data
+   per day. What retention is required.

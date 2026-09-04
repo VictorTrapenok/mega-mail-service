@@ -1,6 +1,6 @@
 {{ ansible_managed | comment }}
 #
-# Приёмник писем стенда: принимает по SMTP штатным образом и выбрасывает.
+# The bench mail sink: accepts over SMTP in the normal way and discards.
 
 myhostname = {{ postfix_sink_hostname }}
 mydomain = {{ postal_test_domain }}
@@ -9,10 +9,10 @@ mydestination =
 inet_interfaces = all
 inet_protocols = ipv4
 
-# --- Изоляция -------------------------------------------------------------
-# Ни одного адреса ретрансляции. Вместе с master.cf, где нет служб доставки
-# наружу, это делает отправку в интернет невозможной на уровне конфигурации,
-# а не только правилами файрвола.
+# --- Containment ----------------------------------------------------------
+# Not a single relay address. Together with master.cf, which has no outbound
+# delivery services, this makes sending to the internet impossible at the configuration
+# level, not only through firewall rules.
 relayhost =
 notify_classes =
 smtpd_relay_restrictions = permit_mynetworks, reject
@@ -20,27 +20,27 @@ smtpd_recipient_restrictions = permit_mynetworks, reject
 mynetworks = 127.0.0.0/8{% for addr in stand_cidr %}, {{ addr }}/32{% endfor %}
 
 
-# Всё уходит в discard. Метка попадает в лог как «status=sent ({{ postfix_sink_discard_token }})»
-# и служит независимым от Postal счётчиком доставки.
+# Everything goes to discard. The marker ends up in the log as "status=sent ({{ postfix_sink_discard_token }})"
+# and serves as a delivery counter independent of Postal.
 default_transport = discard:{{ postfix_sink_discard_token }}
 transport_maps = static:discard:{{ postfix_sink_discard_token }}
 local_recipient_maps =
 
-# --- Логирование ----------------------------------------------------------
-# Пишем в файл через postlogd, минуя journald: тот по умолчанию режет около
-# 333 строк в секунду на сервис, а sink на 300 msg/s пишет около 2100.
-# Потерянные строки выглядят в сверке как потерянные письма.
+# --- Logging --------------------------------------------------------------
+# We write to a file through postlogd, bypassing journald: by default the latter caps at about
+# 333 lines per second per service, while the sink at 300 msg/s writes about 2100.
+# Lost lines look like lost messages in the reconciliation.
 maillog_file = /var/log/postfix/postfix.log
 
-# --- Производительность ---------------------------------------------------
+# --- Performance ----------------------------------------------------------
 {% for key, value in postfix_sink_tuning | dictsort %}
 {{ key }} = {{ value }}
 {% endfor %}
 
 message_size_limit = {{ postfix_sink_message_size_limit }}
 
-# Проверки HELO и задержка отказов только добавляют работу: клиент здесь один
-# и доверенный.
+# HELO checks and delayed rejects only add work: there is a single trusted client
+# here.
 smtpd_helo_required = no
 smtpd_delay_reject = no
 biff = no

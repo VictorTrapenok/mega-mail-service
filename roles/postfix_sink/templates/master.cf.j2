@@ -1,20 +1,20 @@
 {{ ansible_managed | comment }}
 #
-# В этом файле СОЗНАТЕЛЬНО отсутствуют исходящие unix-транспорты smtp,
-# relay, lmtp, local и virtual. Входящий smtp/inet/smtpd остаётся: это
-# публичный приёмник стенда. Без unix-транспортов в системе нет процесса,
-# способного открыть исходящее SMTP-соединение, — это рубеж изоляции, не
-# зависящий ни от файрвола, ни от настроек маршрутизации.
+# This file DELIBERATELY lacks the outbound unix transports smtp,
+# relay, lmtp, local and virtual. The inbound smtp/inet/smtpd stays: it is
+# the public sink of the bench. Without the unix transports there is no process in the
+# system capable of opening an outbound SMTP connection — a containment line that does not
+# depend on the firewall or on routing settings.
 #
-# Колонка chroot везде «n»: очередь лежит на tmpfs, и chroot-окружение,
-# которое Debian собирает при установке пакета, там отсутствует.
+# The chroot column is "n" everywhere: the queue lives on tmpfs, and the chroot
+# environment that Debian builds when installing the package is not there.
 #
 # service       type        private unpriv  chroot  wakeup  maxproc command
 smtp            inet        n       -       n       -       {{ postfix_sink_tuning.default_process_limit }}     smtpd
-  # Пустой stress отключает адаптивный режим. Иначе при полной загрузке
-  # Postfix перезапускает smtpd с -o stress=yes, меняя smtpd_timeout
-  # с 300 на 10 секунд и hard_error_limit с 20 на 1 — то есть сборка,
-  # которая давит сильнее, измеряется по другим правилам SMTP.
+  # An empty stress disables adaptive mode. Otherwise, under full load
+  # Postfix restarts smtpd with -o stress=yes, changing smtpd_timeout
+  # from 300 to 10 seconds and hard_error_limit from 20 to 1 — i.e. a build
+  # that pushes harder is measured under different SMTP rules.
   -o stress=
 pickup          unix        n       -       n       60      1       pickup
 cleanup         unix        n       -       n       -       0       cleanup

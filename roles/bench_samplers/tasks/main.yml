@@ -1,11 +1,11 @@
 ---
-# Запуск и остановка сэмплеров прогона.
+# Starting and stopping the run samplers.
 #
-# Вынесены в отдельную роль, потому что их используют три измерения: приём,
-# дренаж и комбинированный прогон. Глубина очереди снимается только на хосте
-# основной БД, потребление ресурсов — на каждом хосте прогона.
+# They are factored into a separate role because three measurements use them: ingress,
+# drain and the combined run. Queue depth is sampled only on the host of the
+# main DB, resource consumption on every run host.
 
-- name: Создать каталог прогона
+- name: Create the run directory
   ansible.builtin.file:
     path: "{{ bench_dir }}/{{ bench_run_id }}"
     state: directory
@@ -14,7 +14,7 @@
     mode: "0777"
   when: bench_samplers_state == 'started'
 
-- name: Разложить сэмплеры
+- name: Lay out the samplers
   ansible.builtin.template:
     src: "{{ item }}.j2"
     dest: "{{ bench_dir }}/{{ item }}"
@@ -26,7 +26,7 @@
     - stats_sampler.sh
   when: bench_samplers_state == 'started'
 
-- name: Запустить сэмплер очереди
+- name: Start the queue sampler
   ansible.builtin.shell:
     cmd: >-
       nohup {{ bench_dir }}/queue_sampler.sh
@@ -39,7 +39,7 @@
     - bench_samplers_state == 'started'
     - inventory_hostname in groups['postal_main_db']
 
-- name: Запустить сэмплер ресурсов
+- name: Start the resource sampler
   ansible.builtin.shell:
     cmd: >-
       nohup {{ bench_dir }}/stats_sampler.sh
@@ -50,7 +50,7 @@
   changed_when: true
   when: bench_samplers_state == 'started'
 
-- name: Остановить сэмплеры
+- name: Stop the samplers
   ansible.builtin.shell:
     cmd: "pkill -f '{{ bench_dir }}/(queue|stats)_sampler.sh' || true"
   args:
@@ -58,11 +58,11 @@
   changed_when: true
   when: bench_samplers_state == 'stopped'
 
-# Забираем здесь, а не в измеряющих ролях: сэмплеры дописывают CSV до самой
-# остановки, и копия, снятая раньше, обрывалась бы на середине прогона.
-# Без переноса на управляющую машину артефакт прогона не самодостаточен,
-# а именно самодостаточность делает результат публикуемым.
-- name: Забрать CSV сэмплеров на управляющую машину
+# We fetch here rather than in the measuring roles: the samplers keep appending to the CSV
+# until they are stopped, and a copy taken earlier would break off in the middle of the run.
+# Without transferring it to the control machine the run artifact is not self-contained,
+# and it is precisely self-containedness that makes the result publishable.
+- name: Fetch the sampler CSV files to the control machine
   ansible.builtin.fetch:
     src: "{{ item }}"
     dest: "{{ bench_reports_dir }}/{{ bench_run_id }}/"

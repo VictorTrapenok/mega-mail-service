@@ -1,49 +1,49 @@
-# Стенд нагрузочного тестирования Postal
+# Postal Load Testing Bench
 
-Ansible-проект, разворачивающий изолированный контур Postal и снимающий
-воспроизводимую базу производительности, от которой считается прирост
-оптимизированных сборок.
+An Ansible project that deploys an isolated Postal environment and captures a
+reproducible performance baseline against which the gains of optimised builds
+are measured.
 
-Требования к задаче — в [postal-benchmark-ansible-task.md](postal-benchmark-ansible-task.md),
-методология и план оптимизации — в [POSTAL_OPTIMIZATION_GUIDE.md](POSTAL_OPTIMIZATION_GUIDE.md),
-подтверждённые особенности Postal с путями к исходникам — в
+The task requirements are in [postal-benchmark-ansible-task.md](postal-benchmark-ansible-task.md),
+the methodology and optimisation plan in [POSTAL_OPTIMIZATION_GUIDE.md](POSTAL_OPTIMIZATION_GUIDE.md),
+and the confirmed Postal internals with paths into the sources in
 [docs/postal-internals.md](docs/postal-internals.md).
 
-## Требования
+## Requirements
 
-- Управляющая машина: `ansible-core >= 2.17`, Python 3.10+.
-- Целевые хосты: Ubuntu 24.04 LTS x86_64, доступ по SSH с правом `sudo`.
-- Минимум один хост для отладки, два — для измерений.
+- Control machine: `ansible-core >= 2.17`, Python 3.10+.
+- Target hosts: Ubuntu 24.04 LTS x86_64, SSH access with `sudo` rights.
+- At least one host for debugging, two for measurements.
 
 ```bash
 ansible-galaxy collection install -r requirements.yml
 ```
 
-## Топология
+## Topology
 
-| Роль машины | Что на ней |
+| Machine role | What runs on it |
 |---|---|
 | **A (SUT)** | MariaDB + Postal `web` / `smtp` / `worker` |
-| **B (aux)** | CoreDNS + Postfix sink + генератор нагрузки |
+| **B (aux)** | CoreDNS + Postfix sink + load generator |
 
-Разнесение обязательно для измерений: если генератор и приёмник стоят на том же
-железе, они конкурируют с системой под тестом, и её просадка неотличима от их
-собственной. Стенд определяет это сам и помечает такие прогоны как `debug`.
+Splitting them is mandatory for measurements: if the generator and the sink run on the same
+hardware, they compete with the system under test, and its slowdown is indistinguishable from
+their own. The bench detects this by itself and marks such runs as `debug`.
 
-Порты: Postal SMTP ingress — `2525`, приёмник — `25`. MX-запись не несёт номер
-порта, поэтому 25 обязан занимать приёмник, а ingress подвинуть можно.
-Благодаря этому одна раскладка работает и на одной машине, и на нескольких.
+Ports: Postal SMTP ingress is `2525`, the sink is `25`. An MX record does not carry a port
+number, so 25 must be taken by the sink, while ingress can be moved.
+Thanks to this, one layout works both on a single machine and on several.
 
-## Команды
+## Commands
 
-Отладочный контур на одной машине:
+Debug environment on a single machine:
 
 ```bash
 ansible-playbook -i inventories/single-host playbooks/site.yml
 ansible-playbook -i inventories/single-host playbooks/smoke.yml
 ```
 
-Измерительный контур:
+Measurement environment:
 
 ```bash
 ansible-playbook -i inventories/distributed playbooks/site.yml
@@ -53,39 +53,39 @@ ansible-playbook -i inventories/distributed playbooks/benchmark.yml
 ansible-playbook -i inventories/distributed playbooks/reset.yml
 ```
 
-Отчёт появляется в `reports/<run_id>.md`.
+The report appears in `reports/<run_id>.md`.
 
-Сменить целевую скорость или сборку:
+Changing the target rate or the build:
 
 ```bash
 ansible-playbook -i inventories/distributed playbooks/benchmark.yml \
   -e bench_target_rate=120 -e postal_image_ref=3.3.7
 ```
 
-### Раздельные измерения
+### Separate measurements
 
-Приём и разбор очереди меряются по отдельности, и это основной способ понять,
-какая из двух половин не дотягивает до цели. В комбинированном прогоне они
-конкурируют за одни ядра и одну БД, а очередь между ними скрывает, что приём
-принимает быстрее, чем доставка успевает отдать.
+Ingress and queue draining are measured separately, and this is the main way to understand
+which of the two halves falls short of the target. In a combined run they
+compete for the same cores and the same DB, while the queue between them hides the fact that
+ingress accepts faster than delivery manages to hand off.
 
 ```bash
-# Только приём: воркеры остановлены, очередь лишь растёт
+# Ingress only: workers stopped, the queue only grows
 ansible-playbook -i inventories/distributed playbooks/ingress.yml
 
-# Только разбор: очередь набита заранее, ингресс молчит
+# Draining only: the queue is filled in advance, ingress is silent
 ansible-playbook -i inventories/distributed playbooks/drain.yml \
   -e bench_prefill_recipients=200000
 ```
 
-Оба плейбука самодостаточны: `ingress.yml` возвращает воркеры в работу и стенд
-разбирает набранную очередь сам, а `drain.yml` набивает себе очередь штатным
-путём — через API при остановленных воркерах, а не вставкой строк в БД.
+Both playbooks are self-contained: `ingress.yml` returns the workers to service and the bench
+drains the accumulated queue on its own, while `drain.yml` fills its queue the normal
+way — through the API with the workers stopped, not by inserting rows into the DB.
 
-Длина очереди — главный множитель стоимости разбора, потому что ни один
-из двух горячих запросов воркера не покрыт индексом
-(см. [docs/postal-internals.md](docs/postal-internals.md)). Поэтому измерять
-имеет смысл серию длин, а не одну:
+Queue length is the main multiplier of the cost of draining, because neither of
+the two hot worker queries is covered by an index
+(see [docs/postal-internals.md](docs/postal-internals.md)). Hence it makes sense to measure
+a series of lengths rather than a single one:
 
 ```bash
 for n in 10000 50000 200000; do
@@ -94,72 +94,72 @@ for n in 10000 50000 200000; do
 done
 ```
 
-Состав очереди задаётся отдельно от её длины. Отложенная доля воспроизводит
-вырождение очереди в проде: письма с временным отказом остаются в голове таблицы
-со своими прежними `id`, и запрос захвата вынужден перебирать их все.
+The composition of the queue is set separately from its length. The deferred share reproduces
+queue degeneration in production: messages with a temporary rejection stay at the head of the
+table with their former `id`, and the claim query has to walk through all of them.
 
 ```bash
 ansible-playbook -i inventories/distributed playbooks/drain.yml \
   -e bench_prefill_recipients=200000 -e bench_prefill_deferred_share=0.9
 ```
 
-Кардинальность доменов переключается профилем: `wide_domains` даёт 100 000
-доменов вместо 1000, из-за чего батч почти никогда не набирает свои 100 строк
-и запрос доходит до конца таблицы на каждом письме.
+Domain cardinality is switched by profile: `wide_domains` gives 100,000
+domains instead of 1000, which means a batch almost never collects its 100 rows
+and the query runs to the end of the table for every message.
 
 ```bash
 ansible-playbook -i inventories/distributed playbooks/drain.yml \
   -e bench_profile=wide_domains
 ```
 
-## Что делает каждый плейбук
+## What each playbook does
 
-| Плейбук | Назначение | Повторяемый |
+| Playbook | Purpose | Repeatable |
 |---|---|---|
-| `site.yml` | развернуть стенд с нуля | да |
-| `seed.yml` | создать организацию, сервер, домен, учётные данные; опубликовать записи DNS и проверить домен | да |
-| `smoke.yml` | доказать сквозной путь письма и отсутствие утечки | да |
-| `calibrate.yml` | доказать, что вспомогательная цепь опережает цель | нет |
-| `benchmark.yml` | приём и разбор очереди вместе, один отчёт | нет |
-| `ingress.yml` | только скорость приёма, воркеры остановлены | нет |
-| `drain.yml` | только скорость разбора заранее набитой очереди | нет |
-| `reset.yml` | привести состояние к одинаковому старту | нет |
+| `site.yml` | deploy the bench from scratch | yes |
+| `seed.yml` | create the organisation, server, domain and credentials; publish the DNS records and verify the domain | yes |
+| `smoke.yml` | prove the end-to-end path of a message and the absence of leaks | yes |
+| `calibrate.yml` | prove that the auxiliary chain is ahead of the target | no |
+| `benchmark.yml` | ingress and queue draining together, one report | no |
+| `ingress.yml` | ingress rate only, workers stopped | no |
+| `drain.yml` | drain rate of a pre-filled queue only | no |
+| `reset.yml` | bring the state to an identical start | no |
 
-`calibrate`, `benchmark`, `ingress`, `drain` и `reset` неидемпотентны **по замыслу**: протокол
-сравнения сборок требует одинакового стартового состояния перед каждым
-прогоном, поэтому делать `reset` повторяемым значило бы тихо сломать сравнение.
+`calibrate`, `benchmark`, `ingress`, `drain` and `reset` are non-idempotent **by design**: the
+build comparison protocol requires an identical starting state before every
+run, so making `reset` repeatable would quietly break the comparison.
 
-## Изоляция
+## Containment
 
-Ни одно тестовое письмо не может уйти в интернет, и это обеспечивают три
-независимых рубежа — каждого достаточно самого по себе:
+No test message can escape to the internet, and this is ensured by three
+independent lines of defence — each sufficient on its own:
 
-1. Внутренний DNS без forwarder'ов: внешние домены не резолвятся вообще.
-2. `nftables`: исходящий SMTP разрешён только на хосты стенда, попытки
-   считает именованный счётчик.
-3. `master.cf` приёмника: служб `smtp`, `relay`, `lmtp`, `local` и `virtual`
-   там нет, то есть процесса, способного открыть исходящее соединение,
-   в системе не существует.
+1. Internal DNS without forwarders: external domains do not resolve at all.
+2. `nftables`: outbound SMTP is allowed only to the bench hosts, and attempts
+   are counted by a named counter.
+3. The sink's `master.cf`: the `smtp`, `relay`, `lmtp`, `local` and `virtual` services
+   are not there, meaning no process capable of opening an outbound connection
+   exists in the system.
 
-`smoke.yml` проверяет обе стороны, привязываясь к конкретному отправленному
-письму: что лабораторное письмо дошло до приёмника **и** что письмо реальному
-публичному домену не дошло никуда, а счётчик утечек на всех хостах остался
-нулевым. Внешние MX не резолвятся вообще, поэтому доставка обрывается ещё
-до соединения — счётчик nftables ловит уже второй рубеж, на случай если
-первый обойдён.
+`smoke.yml` checks both sides, tying itself to a specific sent
+message: that the lab message reached the sink **and** that a message to a real
+public domain reached nowhere, while the leak counter on all hosts stayed
+at zero. External MX records do not resolve at all, so delivery breaks before
+any connection — the nftables counter catches the second line of defence, in case
+the first one is bypassed.
 
-## Секреты
+## Secrets
 
-Лабораторные пароли лежат в `group_vars/all/90-lab-credentials.yml` открытым
-текстом сознательно: стенд изолирован, защищать нечего, а фиксация ключей —
-это то, что делает прогоны серии сопоставимыми.
+The lab passwords are kept in `group_vars/all/90-lab-credentials.yml` in plain
+text deliberately: the bench is isolated, there is nothing to protect, and pinning the keys is
+exactly what makes the runs of a series comparable.
 
-В репозиторий не попадают: deploy-key клиентского форка, учётные данные
-registry, продовые DKIM-ключи, продовые дампы.
+What does not go into the repository: the client fork's deploy key, registry
+credentials, production DKIM keys, production dumps.
 
-## Что стенд пока не делает
+## What the bench does not do yet
 
-Отложенное перечислено в [roadmap.md](roadmap.md). Коротко: нет Prometheus и
-экспортеров (шесть нужных чисел снимаются сэмплерами в CSV), нет
-fault-injection SMTP для ретраев и временных отказов, нет предзаполнения
-очереди, нет профилирования Ruby и MariaDB, нет полной матрицы нагрузки.
+The deferred items are listed in [roadmap.md](roadmap.md). In short: there is no Prometheus and
+no exporters (the six numbers needed are captured by samplers into CSV), no
+SMTP fault injection for retries and temporary rejections, no queue
+prefill, no Ruby and MariaDB profiling, no full load matrix.

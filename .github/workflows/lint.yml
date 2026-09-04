@@ -1,8 +1,8 @@
 ---
-# Дешёвый гейт: синтаксис, разбор inventory и проверка на запрещённые секреты.
+# Cheap gate: syntax, inventory parsing and a check for forbidden secrets.
 #
-# Полноценного прогона бенчмарка здесь нет и не планируется: раннеру не хватит
-# ресурсов, а исходящий TCP/25 у GitHub заблокирован на уровне платформы.
+# There is no full benchmark run here and none is planned: the runner does not have
+# enough resources, and outbound TCP/25 is blocked by GitHub at the platform level.
 
 name: lint
 
@@ -20,10 +20,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Установить инструменты
+      - name: Install tooling
         run: pip install ansible-core ansible-lint yamllint
 
-      - name: Установить коллекции
+      - name: Install collections
         run: ansible-galaxy collection install -r requirements.yml
 
       - name: yamllint
@@ -32,14 +32,14 @@ jobs:
       - name: ansible-lint
         run: ansible-lint
 
-      - name: Разбор inventory
+      - name: Parse inventory
         run: |
           for inv in inventories/*/; do
             echo "== $inv"
             ansible-inventory -i "$inv" --graph
           done
 
-      - name: Проверка синтаксиса плейбуков
+      - name: Check playbook syntax
         run: |
           for pb in playbooks/*.yml; do
             ansible-playbook -i inventories/single-host --syntax-check "$pb"

@@ -1,7 +1,7 @@
 {{ ansible_managed | comment }}
 
 [mysqld]
-# Postal требует ROW_FORMAT=DYNAMIC для всех таблиц.
+# Postal requires ROW_FORMAT=DYNAMIC for all tables.
 innodb_default_row_format = dynamic
 innodb_file_per_table     = ON
 
@@ -10,7 +10,7 @@ innodb_file_per_table     = ON
 {% endfor %}
 
 {% if not mariadb_binlog_enabled %}
-# Бинлог на стенде не нужен и удваивает объём записи на диск.
+# The binlog is not needed on the bench and doubles the volume of disk writes.
 skip-log-bin
 {% endif %}
 

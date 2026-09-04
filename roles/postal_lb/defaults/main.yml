@@ -1,10 +1,10 @@
 ---
-# Предел одновременных соединений. Должен покрывать число виртуальных
-# пользователей генератора: по закону Литтла оно равно целевой скорости,
-# умноженной на латентность приёма, и на перегрузе доходило до полутора тысяч.
-# Балансировщик, упирающийся в свой лимит, выглядел бы отказом Postal.
+# The concurrent connection limit. It must cover the number of virtual
+# users of the generator: by Little's law that equals the target rate
+# multiplied by the ingress latency, and under overload it reached one and a half thousand.
+# A balancer hitting its own limit would look like a Postal failure.
 postal_lb_maxconn: 16384
 
-# Больше худшей наблюдавшейся латентности приёма: под перегрузом она доходила
-# до минуты, и более короткий таймаут показал бы отказы там, где их нет.
+# Larger than the worst observed ingress latency: under overload it reached
+# a minute, and a shorter timeout would show failures where there are none.
 postal_lb_timeout: "180s"

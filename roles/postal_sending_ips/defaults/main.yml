@@ -1,0 +1,10 @@
+---
+# Where the persistent netplan drop-in is written. The bench runs Ubuntu with
+# cloud-init managed netplan, so an extra file merges with 50-cloud-init.yaml
+# instead of replacing it.
+postal_sending_ips_netplan_file: /etc/netplan/60-postal-sending-ips.yaml
+
+# Whether to verify that every sending address can actually open TCP/25 to the sinks.
+# Kept switchable only because the check needs the sinks to be up already; in site.yml
+# they are, and turning it off means accepting a silent queue stall as a possible outcome.
+postal_sending_ips_verify: true

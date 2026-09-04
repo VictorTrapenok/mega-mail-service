@@ -1,12 +1,12 @@
 #!/bin/sh
 set -eu
 
-# Очередь лежит на tmpfs, поэтому её структуру нужно пересобирать при каждом
-# старте: том пустой, а Postfix ожидает готовое дерево каталогов с правами.
+# The queue lives on tmpfs, so its structure has to be rebuilt on every
+# start: the volume is empty while Postfix expects a ready directory tree with permissions.
 mkdir -p /var/log/postfix
 postfix set-permissions >/dev/null 2>&1 || true
 postfix check
 
-# start-fg держит процесс на переднем плане, чтобы Docker видел его как PID 1
-# и корректно доставлял сигналы остановки.
+# start-fg keeps the process in the foreground so that Docker sees it as PID 1
+# and delivers stop signals correctly.
 exec postfix start-fg

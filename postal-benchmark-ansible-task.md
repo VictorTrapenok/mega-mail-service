@@ -1,194 +1,194 @@
-# Задача: Ansible-стенд для нагрузочного тестирования Postal
+# Task: an Ansible bench for load testing Postal
 
-> Ревизия 2. Часть требований первой редакции была технически невыполнима — исправления сделаны по результатам чтения исходников Postal 3.3.7, а не документации. Обоснования собраны в [docs/postal-internals.md](docs/postal-internals.md).
+> Revision 2. Part of the requirements of the first edition was technically unachievable — the corrections were made based on reading the Postal 3.3.7 sources, not the documentation. The rationale is collected in [docs/postal-internals.md](docs/postal-internals.md).
 
-## Контекст и цель
+## Context and goal
 
-Создать Ansible-проект, который разворачивает изолированный тестовый контур Postal (https://github.com/postalserver/postal) и позволяет сравнивать производительность разных Docker-образов Postal.
+Build an Ansible project that deploys an isolated Postal test environment (https://github.com/postalserver/postal) and makes it possible to compare the performance of different Postal Docker images.
 
-Ближайшая цель — **воспроизводимая база (baseline) на upstream Postal**, от которой считается прирост собственных оптимизированных сборок. Целевой ориентир нагрузки — **5 млн получателей в сутки (58 rcpt/s в среднем)**; это ориентир, а не жёсткий контракт приёмки.
+The immediate goal is a **reproducible baseline on upstream Postal**, against which the gains of our own optimised builds are measured. The target load reference point is **5 million recipients per day (58 rcpt/s on average)**; that is a reference point, not a hard acceptance contract.
 
-Главное требование: распределение сервисов определяется **только Ansible inventory**. Один и тот же playbook должен работать в двух режимах:
+The main requirement: the distribution of services is determined **only by the Ansible inventory**. The same playbook must work in two modes:
 
-1. Все компоненты на одном сервере — для дешёвой отладки.
-2. Минимум два сервера (SUT отдельно от генератора и sink) — для измерений, результаты которых кому-то предъявляются.
+1. All components on a single server — for cheap debugging.
+2. At least two servers (the SUT separate from the generator and the sink) — for measurements whose results are presented to someone.
 
-Не хардкодить IP-адреса, имена узлов и совместное размещение сервисов. Адреса зависимостей и списки реплик формировать из `groups` и `hostvars`.
+Do not hardcode IP addresses, node names or the co-location of services. Dependency addresses and replica lists must be derived from `groups` and `hostvars`.
 
-## Единица измерения
+## The unit of measurement
 
-**Заголовочная метрика — `recipients/s`, а не письма, SMTP-сессии или API-запросы.**
+**The headline metric is `recipients/s`, not messages, SMTP sessions or API requests.**
 
-Postal создаёт отдельное сообщение на каждого получателя (`OutgoingMessagePrototype#create_messages`), и raw MIME сохраняется двумя longblob-строками на каждое такое сообщение (`Database#insert_raw_message`), без дедупликации. Письмо на 50 адресов — это 50 строк `messages`, 50 строк очереди и 100 longblob-строк. Считать его одной единицей нагрузки нельзя.
+Postal creates a separate message per recipient (`OutgoingMessagePrototype#create_messages`), and the raw MIME is stored as two longblob rows per such message (`Database#insert_raw_message`), without deduplication. A message to 50 addresses is 50 `messages` rows, 50 queue rows and 100 longblob rows. It cannot be counted as a single unit of load.
 
-В отчётах явно различать: `messages` (уникальные MIME) и `recipients` (адресаты с собственным состоянием доставки).
+Reports must explicitly distinguish `messages` (unique MIME) from `recipients` (addressees with their own delivery state).
 
-## Предпочтительная реализация
+## Preferred implementation
 
 - Ansible roles + Jinja2 templates.
-- Docker Engine и Docker Compose plugin на целевых серверах, версии пакетов зафиксированы.
-- Ubuntu 24.04 LTS x86_64 как базовая поддерживаемая ОС.
-- **Все образы фиксируются по digest** (`repo@sha256:…`), не по тегу — см. раздел «Образы».
-- Стенд тестовый, не продакшен: простота кода важнее полноты. Идемпотентность — пожелание (см. «Идемпотентность»).
-- Контейнеры должны иметь настраиваемые CPU/RAM limits.
-- Конфигурация Postal задаётся **только переменными окружения**: Konfig загружает `Environment` раньше YAML, поэтому env всегда выигрывает. В `/config` остаётся только `signing.key`.
+- Docker Engine and the Docker Compose plugin on the target servers, with package versions pinned.
+- Ubuntu 24.04 LTS x86_64 as the base supported OS.
+- **All images are pinned by digest** (`repo@sha256:…`), not by tag — see the "Images" section.
+- The bench is a test setup, not production: simplicity of the code matters more than completeness. Idempotency is a wish (see "Idempotency").
+- Containers must have configurable CPU/RAM limits.
+- Postal is configured **only through environment variables**: Konfig loads `Environment` before YAML, so env always wins. Only `signing.key` remains in `/config`.
 
 ## Inventory groups
 
 ```yaml
-postal_main_db:       # основная MariaDB Postal
-postal_message_db:    # message DB; по умолчанию тот же хост, что и main
-postal_admin:         # ровно один узел для initialize/seed/migrations
-postal_web:           # один или несколько web/API-инстансов
-postal_smtp:          # один или несколько SMTP ingress-инстансов
-postal_workers:       # один или несколько worker-узлов
-postal_load_balancers:# необязательный HAProxy — ТОЛЬКО для HTTP API, не для SMTP
+postal_main_db:       # the main Postal MariaDB
+postal_message_db:    # the message DB; the same host as main by default
+postal_admin:         # exactly one node for initialize/seed/migrations
+postal_web:           # one or more web/API instances
+postal_smtp:          # one or more SMTP ingress instances
+postal_workers:       # one or more worker nodes
+postal_load_balancers:# an optional HAProxy — ONLY for the HTTP API, not for SMTP
 
-test_dns:             # внутренний авторитативный DNS для тестовых MX
-postfix_sinks:        # один или несколько принимающих Postfix
-load_generators:      # генераторы нагрузки
-monitoring:           # сбор метрик и сборка отчёта
+test_dns:             # internal authoritative DNS for the test MX records
+postfix_sinks:        # one or more receiving Postfix instances
+load_generators:      # load generators
+monitoring:           # metric collection and report building
 ```
 
-Один host разрешено включать сразу во все группы. Количество серверов в `postal_web`, `postal_smtp`, `postal_workers` и `postfix_sinks` не должно быть ограничено playbook.
+A single host may be included in all groups at once. The number of servers in `postal_web`, `postal_smtp`, `postal_workers` and `postfix_sinks` must not be limited by the playbook.
 
-Два примера inventory:
+Two example inventories:
 
-- `inventories/single-host/hosts.yml` — все роли на одном сервере (отладка);
-- `inventories/distributed/hosts.yml` — минимум два сервера: **A (SUT)** = MariaDB + Postal, **B (aux)** = DNS + Postfix sink + генератор. Расширяется добавлением строк.
+- `inventories/single-host/hosts.yml` — all roles on a single server (debugging);
+- `inventories/distributed/hosts.yml` — at least two servers: **A (SUT)** = MariaDB + Postal, **B (aux)** = DNS + Postfix sink + generator. Extended by adding lines.
 
-Для межсерверного взаимодействия использовать переменную `service_ip`; при её отсутствии — `ansible_host`, затем приватный адрес из фактов. `service_ip` обязателен в inventory и проверяется preflight'ом: факты чужих хостов недоступны под `--limit` и в компонентных плеях.
+For inter-server communication use the `service_ip` variable; if it is absent, `ansible_host`, then the private address from the facts. `service_ip` is mandatory in the inventory and is checked by preflight: the facts of other hosts are unavailable under `--limit` and in component plays.
 
-## Раскладка портов
+## Port layout
 
-**Postal SMTP ingress — всегда `2525`, Postfix sink — всегда `25`.**
+**Postal SMTP ingress is always `2525`, the Postfix sink is always `25`.**
 
-MX-запись не несёт номер порта, поэтому sink обязан слушать 25, а ingress можно подвинуть (`SMTP_SERVER_PORT`) — генератор наш. Благодаря этому одна и та же топология работает и на одном сервере, и на нескольких, а `network_mode: host` из upstream-шаблона используется как есть. Это же делает работоспособными IP pools: воркер видит все адреса своего хоста.
+An MX record does not carry a port number, so the sink must listen on 25, whereas ingress can be moved (`SMTP_SERVER_PORT`) — the generator is ours. Thanks to this, the same topology works both on a single server and on several, and the `network_mode: host` from the upstream template is used as is. This is also what makes IP pools workable: the worker sees all the addresses of its host.
 
-Остальное: web `5000`, worker health `9200+i`, smtp health `9100`, MariaDB `3306`, DNS на `service_ip:53`. Базы health-серверов разнесены с запасом: при двух и более репликах воркера соседние номера столкнулись бы с портом SMTP, и проверка второй реплики опрашивала бы чужой процесс.
+The rest: web `5000`, worker health `9200+i`, smtp health `9100`, MariaDB `3306`, DNS on `service_ip:53`. The health server bases are spread apart with room to spare: with two or more worker replicas, adjacent numbers would collide with the SMTP port, and the check for the second replica would poll a foreign process.
 
-## Необходимые роли
+## Required roles
 
-Определяются исполнителем. Минимально ожидаются: подготовка хоста, Docker, изоляция сети, DNS, MariaDB, Postal (конфиг + запуск + инициализация схемы + сидирование), Postfix sink, генератор нагрузки, сбор метрик и отчёта, reset.
+Determined by the implementer. At a minimum the following are expected: host preparation, Docker, network containment, DNS, MariaDB, Postal (config + startup + schema initialisation + seeding), the Postfix sink, the load generator, metric and report collection, reset.
 
-## DNS — обязателен
+## DNS is mandatory
 
-Записей в `/etc/hosts` **недостаточно, и это не вопрос удобства**: `app/lib/dns_resolver.rb` обращается через `Resolv::DNS` и никогда не читает `/etc/hosts`; MX-записи в hosts-файле не существует как типа. Неотвеченный MX-запрос стоит около 10 секунд и **поднимает исключение** (`raise_timeout_errors: true`), превращаясь в SoftFail.
+Entries in `/etc/hosts` are **not enough, and this is not a matter of convenience**: `app/lib/dns_resolver.rb` goes through `Resolv::DNS` and never reads `/etc/hosts`; an MX record does not exist as a type in a hosts file. An unanswered MX query costs about 10 seconds and **raises an exception** (`raise_timeout_errors: true`), turning into a SoftFail.
 
-Облачный DNS (Route53 и аналоги) не подходит: `.test` — зарезервированная зона RFC 6761, делегировать её нельзя, а публичный резолвинг добавляет задержку на горячий путь доставки и раскрывает топологию стенда.
+Cloud DNS (Route53 and the like) is not suitable: `.test` is a reserved zone under RFC 6761 and cannot be delegated, while public resolution adds latency on the hot delivery path and exposes the bench topology.
 
-Требуется внутренний авторитативный сервер (CoreDNS) для зоны `.test`, **без forwarder'ов** — тогда внешние домены не резолвятся вообще, а не просто блокируются файрволом.
+An internal authoritative server (CoreDNS) is required for the `.test` zone, **without forwarders** — then external domains do not resolve at all rather than merely being blocked by the firewall.
 
-Домен отправителя должен быть верифицирован, иначе любая отправка падает с `530 From/Sender name is not valid`. Записи (SPF, DKIM, verification TXT, return-path CNAME) отдаются из своей зоны, и обязательно выставляется `POSTAL_USE_LOCAL_NS_FOR_DOMAIN_VERIFICATION=true` — по умолчанию `false`, и тогда Postal сначала резолвит NS домена и на `.test` ломается.
+The sender domain must be verified, otherwise any send fails with `530 From/Sender name is not valid`. The records (SPF, DKIM, verification TXT, return-path CNAME) are served from our own zone, and `POSTAL_USE_LOCAL_NS_FOR_DOMAIN_VERIFICATION=true` must be set — it defaults to `false`, in which case Postal first resolves the domain's NS and breaks on `.test`.
 
-## Распределение нагрузки между sink'ами
+## Load distribution across sinks
 
-Способ задаётся переменной, но варианты не равноценны:
+The method is set by a variable, but the options are not equivalent:
 
-- **Внутренний DNS (по умолчанию)** — несколько равноприоритетных MX. `DNSResolver#mx` рандомизирует записи с одинаковым приоритетом, так что нагрузка расходится сама.
-- **`smtp_relays`** — допустим только как отладочный обход. Устанавливает единый smart host и **полностью отключает MX-резолвинг**, из-за чего маршрутизация по доменам получателей перестаёт работать. Хост релея обязан быть резолвимым FQDN: IP-литерал в `smtp_relays` в Postal v3 не работает.
-- **HAProxy для SMTP — запрещён.** Он терминирует TCP, и sink видит адрес балансировщика вместо source IP, который Postal привязал к сокету. Это уничтожает единственное сквозное доказательство работы привязки исходящего IP и ротации IP.
+- **Internal DNS (the default)** — several MX records of equal priority. `DNSResolver#mx` randomises records with the same priority, so the load spreads by itself.
+- **`smtp_relays`** — acceptable only as a debugging workaround. It sets a single smart host and **disables MX resolution entirely**, so routing by recipient domain stops working. The relay host must be a resolvable FQDN: an IP literal in `smtp_relays` does not work in Postal v3.
+- **HAProxy for SMTP is forbidden.** It terminates TCP, and the sink sees the balancer's address instead of the source IP that Postal bound to the socket. That destroys the only end-to-end proof that outbound IP binding and IP rotation work.
 
-## Образы
+## Images
 
-Фиксация **только по digest**: `repo@sha256:<index digest>`. Проверено на реестре — `latest` и `stable` являются движущимися указателями с разными digest'ами, плавающих тегов `3` и `3.3` не существует. Роль должна отклонять теги `latest`, `stable`, `branch-*` и `ci-*`; последние собраны с `--target ci` без precompile ассетов, из-за чего web отдаёт 500, а TCP-healthcheck при этом зелёный.
+Pinning **only by digest**: `repo@sha256:<index digest>`. Verified against the registry — `latest` and `stable` are moving pointers with different digests, and floating tags `3` and `3.3` do not exist. The role must reject the tags `latest`, `stable`, `branch-*` and `ci-*`; the last of these are built with `--target ci` without asset precompilation, which makes web return 500 while the TCP health check stays green.
 
-В отчёт о прогоне записывается digest каждого образа.
+The digest of every image is recorded in the run report.
 
-## Сидирование данных
+## Data seeding
 
-Административного API у Postal нет: `config/routes.rb` отдаёт только `/api/v1/send/*` и `/api/v1/messages/*`. `postal make-user` интерактивен (HighLine). Прямой SQL опасен: `Server` в `after_create` создаёт свою message-БД, `Domain` в `before_create` генерирует DKIM-ключ.
+Postal has no administrative API: `config/routes.rb` exposes only `/api/v1/send/*` and `/api/v1/messages/*`. `postal make-user` is interactive (HighLine). Raw SQL is dangerous: `Server` creates its own message DB in `after_create`, and `Domain` generates the DKIM key in `before_create`.
 
-Единственный корректный автоматизируемый путь — `rails runner` со скриптом, построенным на `find_or_create_by!`, печатающим результат в виде JSON (server_id, имя message-БД, DNS-записи, ключи credentials) для последующего использования DNS-ролью и генератором.
+The only correct automatable path is `rails runner` with a script built on `find_or_create_by!` that prints the result as JSON (server_id, the message DB name, the DNS records, the credential keys) for subsequent use by the DNS role and the generator.
 
-## Безопасность теста
+## Test safety
 
-- Postfix работает только в закрытой сети и удаляет письма через `discard` после штатного SMTP-приёма.
-- Исходящие TCP 25/465/587 запрещены nftables ко всему, кроме sink'ов стенда, с именованными счётчиками.
-- Внутренний DNS без forwarder'ов — внешние MX физически не резолвятся.
-- Smoke test обязан подтвердить, что письмо прошло `load generator → Postal → Postfix → discard`, **и одновременно** что письмо, адресованное реальному публичному домену, не дошло никуда, а счётчик nftables на всех хостах остался нулевым. Обе проверки привязываются к конкретному отправленному письму: grep по логу без метки прошёл бы на любом стенде, который когда-либо что-то доставил.
+- Postfix runs only in a closed network and deletes messages via `discard` after a normal SMTP acceptance.
+- Outbound TCP 25/465/587 is forbidden by nftables to everything except the bench sinks, with named counters.
+- The internal DNS has no forwarders — external MX records physically do not resolve.
+- The smoke test must confirm that a message travelled `load generator → Postal → Postfix → discard`, **and at the same time** that a message addressed to a real public domain reached nowhere, while the nftables counter on all hosts stayed at zero. Both checks are tied to a specific sent message: a grep over the log without a marker would pass on any bench that has ever delivered anything.
 
-## Обязательные параметры Postfix sink
+## Mandatory Postfix sink settings
 
-Дефолты Postfix ограничат стенд раньше, чем Postal, и это будет выглядеть как результат измерения Postal:
+The Postfix defaults would limit the bench before Postal does, and that would look like a measurement result for Postal:
 
-- `in_flow_delay = 0` — дефолт `1s` документирован как ограничивающий приём примерно 100 сообщениями в секунду сверх скорости доставки.
-- `smtpd_client_connection_count_limit = 0` — дефолт 50 применяется к фактически одному клиентскому IP (все воркеры Postal).
+- `in_flow_delay = 0` — the default of `1s` is documented as limiting reception to roughly 100 messages per second above the delivery rate.
+- `smtpd_client_connection_count_limit = 0` — the default of 50 applies to what is effectively a single client IP (all the Postal workers).
 - `default_process_limit = 400`.
-- `maillog_file` в файл, мимо journald. journald по умолчанию режет около 333 строк в секунду на сервис, а discard-sink на 300 msg/s пишет около 2100 — до 85 % строк для сверки теряются молча, и это выглядит как потеря писем.
+- `maillog_file` to a file, bypassing journald. By default journald caps at about 333 lines per second per service, while a discard sink at 300 msg/s writes about 2100 — up to 85 % of the lines needed for reconciliation are lost silently, and that looks like lost messages.
 
-## Параметры Postal, которые нельзя оставлять по умолчанию
+## Postal settings that must not be left at their defaults
 
-- `POSTAL_QUEUED_MESSAGE_LOCK_STALE_DAYS` — задать явно. `TidyQueuedMessagesTask` **уничтожает** сообщения с устаревшим локом, а не переоткрывает их. Дополнительно `bin/postal` запускает Ruby без `exec`, так что PID 1 — это bash, обработчики сигналов не срабатывают на `docker stop`, и после каждого рестарта остаются залоченные строки.
-- `HEALTH_SERVER_BIND_ADDRESS=0.0.0.0` и порт по индексу реплики. По умолчанию health-сервер слушает `127.0.0.1`, а при занятом порте перехватывает `EADDRINUSE` и просто пишет в лог — метрики будут только у первой реплики.
-- `POSTAL_USE_LOCAL_NS_FOR_DOMAIN_VERIFICATION=true` — см. раздел про DNS.
+- `POSTAL_QUEUED_MESSAGE_LOCK_STALE_DAYS` — set explicitly. `TidyQueuedMessagesTask` **destroys** messages with a stale lock instead of reopening them. On top of that, `bin/postal` starts Ruby without `exec`, so PID 1 is bash, the signal handlers do not fire on `docker stop`, and locked rows are left behind after every restart.
+- `HEALTH_SERVER_BIND_ADDRESS=0.0.0.0` and a port derived from the replica index. By default the health server listens on `127.0.0.1`, and when the port is taken it catches `EADDRINUSE` and merely writes to the log — only the first replica will have metrics.
+- `POSTAL_USE_LOCAL_NS_FOR_DOMAIN_VERIFICATION=true` — see the DNS section.
 
-## Метрики и отчёт
+## Metrics and the report
 
-Единственное требование заказчика — производительность. Остальные счётчики полезны только для диагностики разных сборок и добавляются по мере надобности. На первом этапе Prometheus и экспортеры не разворачиваются.
+The customer's only requirement is performance. The other counters are useful only for diagnosing different builds and are added as needed. At the first stage Prometheus and exporters are not deployed.
 
-Минимальный обязательный набор:
+The minimum mandatory set:
 
-| Метрика | Источник |
+| Metric | Source |
 |---|---|
-| accepted recipients/s, латентность приёма p50/p95/p99 | CSV генератора |
-| delivered recipients/s | подсчёт строк лога Postfix по уникальному discard-токену |
-| глубина очереди и возраст старейшего сообщения во времени | SQL-сэмплер, один запрос в 5 с |
-| CPU/RAM по контейнерам | `docker stats` в CSV раз в 5 с |
-| время дренажа после остановки нагрузки | тот же SQL-сэмплер |
-| сверка по корзинам | 5 SQL-COUNT'ов в конце прогона |
+| accepted recipients/s, ingress latency p50/p95/p99 | the generator's CSV |
+| delivered recipients/s | counting Postfix log lines by a unique discard token |
+| queue depth and the age of the oldest message over time | an SQL sampler, one query every 5 s |
+| CPU/RAM per container | `docker stats` into CSV every 5 s |
+| drain time after the load stops | the same SQL sampler |
+| reconciliation by buckets | 5 SQL COUNTs at the end of the run |
 
-Штатных счётчиков Postal для этого не хватает: в версии 3.x ровно 11 Prometheus-метрик, среди них нет ни глубины очереди, ни delivered/failed/held; web-процесс не отдаёт `/metrics` вообще; штатный `script/queue_size.rb` содержит ошибку приоритета `AND`/`OR` и считает залоченные строки.
+Postal's stock counters are not enough for this: version 3.x has exactly 11 Prometheus metrics, and among them there is neither queue depth nor delivered/failed/held; the web process does not serve `/metrics` at all; and the stock `script/queue_size.rb` contains an `AND`/`OR` precedence bug and counts locked rows.
 
-**Артефакт прогона — один текстовый файл `reports/<run_id>.md`**, самодостаточный для публикации: параметры запуска (digest'ы образов, лимиты, ключевые переменные Postal и MariaDB, профиль нагрузки, роли хостов и их железо, длительности фаз), результат калибровки, результаты, таблица сверки и раздел «что этот прогон не доказывает». Сырые CSV кладутся рядом. Данные MariaDB после прогона удаляются — хранить их не требуется.
+**The run artifact is a single text file `reports/<run_id>.md`**, self-contained enough to publish: the run parameters (image digests, limits, the key Postal and MariaDB variables, the load profile, the host roles and their hardware, the phase durations), the calibration result, the results, the reconciliation table and a "what this run does not prove" section. The raw CSV files are placed alongside. The MariaDB data is deleted after the run — there is no requirement to keep it.
 
-## Сверка
+## Reconciliation
 
 ```
 accepted = sent + hard_failed + held + queued + in_flight
 ```
 
-Формулировка первой редакции (`accepted = delivered_to_sink + failed + queued`) не сойдётся никогда: в ней нет корзины `Held` (suppression list, send_limit, dev mode, suspended server) и нет `in_flight` (строки с непустым `locked_at`). Кроме того, в Postal **`553` и `500–504` классифицируются как SoftFail, а не как permanent** (`Net::SMTP::Response#exception_class`), поэтому «failed» без уточнения неоднозначно.
+The formulation of the first edition (`accepted = delivered_to_sink + failed + queued`) can never add up: it lacks the `Held` bucket (suppression list, send_limit, dev mode, suspended server) and lacks `in_flight` (rows with a non-empty `locked_at`). Besides, in Postal **`553` and `500–504` are classified as SoftFail rather than permanent** (`Net::SMTP::Response#exception_class`), so "failed" without qualification is ambiguous.
 
-`delivered` считается независимо — из логов sink — и сравнивается с `sent` из БД Postal. Расхождение означает либо потерю писем, либо потерю строк лога, и в отчёте должно быть объяснено.
+`delivered` is counted independently — from the sink logs — and compared with `sent` from the Postal DB. A discrepancy means either lost messages or lost log lines, and must be explained in the report.
 
-Дополнительно: уникальные localpart'ы на каждый прогон и `TRUNCATE suppressions` в reset. Два HardFail на адрес за 24 часа переводят все последующие письма ему в `Held`, и пул получателей выедается между прогонами.
+Additionally: unique localparts per run and `TRUNCATE suppressions` in reset. Two HardFails per address within 24 hours move all subsequent messages to it into `Held`, and the recipient pool gets eaten up between runs.
 
-## Профиль нагрузки
+## Load profile
 
-Основной профиль фиксируется и не меняется между сборками: 1 получатель на письмо, MIME 100 КБ, около 1000 доменов назначения с перекосом, 100 % `250 OK`, tracking off, DKIM on, webhooks off, пустая стартовая очередь.
+The primary profile is pinned and does not change between builds: 1 recipient per message, MIME 100 KB, around 1000 destination domains with a skew, 100 % `250 OK`, tracking off, DKIM on, webhooks off, an empty starting queue.
 
-Кардинальность доменов принципиальна: `batch_key = "outgoing-<domain>"` собирает в батч до 100 писем, поэтому отправка в один домен дарит Postal бесплатный примерно стократный выигрыш и делает базу нечестной.
+Domain cardinality matters fundamentally: `batch_key = "outgoing-<domain>"` packs up to 100 messages into a batch, so sending to a single domain hands Postal a free ~100x win and makes the baseline dishonest.
 
-Генератор должен работать в **открытой модели** (фиксированное расписание отправок, латентность считается от запланированного времени). Замкнутый генератор перестаёт подавать нагрузку ровно тогда, когда SUT затыкается, и систематически занижает хвост латентности — то есть скрывает именно то, чем отличаются сборки.
+The generator must work in an **open model** (a fixed sending schedule, with latency measured from the scheduled time). A closed generator stops applying load exactly when the SUT stalls, and systematically understates the latency tail — that is, it hides precisely what distinguishes builds.
 
-## Идемпотентность
+## Idempotency
 
-Пожелание, а не критерий приёмки. Конфигурационные плейбуки стоит делать повторяемыми, но `reset.yml`, `calibrate.yml` и `benchmark.yml` неидемпотентны по замыслу: протокол сравнения требует восстановления одинакового состояния БД перед каждым прогоном.
+A wish, not an acceptance criterion. The configuration playbooks are worth making repeatable, but `reset.yml`, `calibrate.yml` and `benchmark.yml` are non-idempotent by design: the comparison protocol requires restoring an identical DB state before every run.
 
-## Секреты
+## Secrets
 
-Лабораторные пароли (MariaDB, админ Postal, ключи credentials) хранятся открытым текстом в `group_vars` с комментарием почему — это делает прогон воспроизводимым, а защищать на изолированном `.test`-стенде нечего. Vault-файл не используется.
+The lab passwords (MariaDB, the Postal admin, the credential keys) are stored in plain text in `group_vars` with a comment explaining why — this makes a run reproducible, and there is nothing to protect on an isolated `.test` bench. No vault file is used.
 
-В репозиторий не попадают ровно четыре вещи: deploy-key клиентского форка, учётные данные registry, продовые DKIM-ключи и продовые дампы.
+Exactly four things do not go into the repository: the client fork's deploy key, registry credentials, production DKIM keys and production dumps.
 
-## Критерии приёмки
+## Acceptance criteria
 
-- Оба sample inventory работают без изменения ролей и playbook'ов.
-- Добавление worker, SMTP, web или Postfix сервера требует только изменения inventory.
-- Один физический сервер может выполнять все роли одновременно (отладочный режим; измерения на нём не предъявляются как сравнительные).
-- Замена образа Postal разворачивает другую сборку, не пересоздавая MariaDB, сеть и хостовую подготовку.
-- Ни одно тестовое письмо не может уйти во внешний интернет — подтверждается smoke-тестом в обеих его половинах.
-- Сверка сходится: расхождение по тождеству меньше 1 %.
-- Калибровка подтверждает, что связка генератор→sink имеет запас относительно целевой скорости; иначе прогон не начинается.
-- Отчёт содержит абсолютные значения и, при наличии baseline, процентное изменение относительно него, вместе с разбросом между повторами.
-- Документация содержит команды для single-host, distributed, smoke, calibration, benchmark и reset.
+- Both sample inventories work without changing the roles and playbooks.
+- Adding a worker, SMTP, web or Postfix server requires only a change to the inventory.
+- A single physical server can perform all roles at once (debug mode; measurements taken on it are not presented as comparative).
+- Replacing the Postal image deploys a different build without recreating MariaDB, the network and the host preparation.
+- No test message can escape to the public internet — confirmed by the smoke test in both of its halves.
+- The reconciliation adds up: the discrepancy against the identity is below 1 %.
+- Calibration confirms that the generator-to-sink path has headroom relative to the target rate; otherwise the run does not start.
+- The report contains absolute values and, when a baseline exists, the percentage change relative to it, together with the spread between repeats.
+- The documentation contains commands for single-host, distributed, smoke, calibration, benchmark and reset.
 
-## Результат работы
+## Deliverable
 
-Git-репозиторий со структурой Ansible-проекта, ролями, двумя inventory, шаблонами конфигураций, README и минимальным CI (lint и syntax-check).
+A git repository with the structure of an Ansible project, the roles, two inventories, configuration templates, a README and minimal CI (lint and syntax check).
 
-Эта задача покрывает первые два этапа общего плана и подготавливает третий:
+This task covers the first two stages of the overall plan and prepares the third:
 
 1. Setting up a test environment for comparing different builds.
 2. Deploying the test environment.

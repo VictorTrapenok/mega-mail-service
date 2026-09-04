@@ -1,27 +1,27 @@
 ---
-# Калибровка вспомогательной цепи.
+# Calibration of the auxiliary chain.
 #
-# Без неё легко измерить Postfix и не заметить: дефолты Postfix ограничивают
-# приём раньше, чем упирается Postal, и просадка выглядит как результат
-# измерения Postal. Плейбук ПАДАЕТ, если запаса нет, а не предупреждает.
+# Without it, it is easy to measure Postfix and never notice: the Postfix defaults limit
+# reception before Postal tops out, and the resulting drop looks like a measurement
+# of Postal. The playbook FAILS when there is no headroom, rather than warning.
 
-- name: Собрать факты со всех хостов
+- name: Gather facts from all hosts
   hosts: all
   gather_facts: true
   tasks: []
 
-- name: Измерить потолок связки генератор → приёмник
+- name: Measure the ceiling of the generator to sink path
   hosts: load_generators
   become: true
   vars:
-    # Скобки обязательны. Без них Jinja разбирает выражение как
-    # a * (b | round | int), то есть округляет коэффициент запаса,
-    # а не произведение, и целевая скорость калибровки молча становится
-    # target x 2 при любом значении bench_calibration_headroom.
+    # The parentheses are mandatory. Without them Jinja parses the expression as
+    # a * (b | round | int), i.e. it rounds the headroom factor
+    # rather than the product, and the calibration target rate silently becomes
+    # target x 2 for any value of bench_calibration_headroom.
     calib_rate: "{{ ((bench_target_rate | int) * (bench_calibration_headroom | float)) | round | int }}"
     calib_messages: 20000
   tasks:
-    - name: Снять счётчик приёмника до калибровки
+    - name: Read the sink counter before calibration
       ansible.builtin.shell:
         cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
       args:
@@ -30,17 +30,17 @@
       register: calib_before
       changed_when: false
 
-    - name: Отметить время начала
+    - name: Record the start time
       ansible.builtin.command:
         argv: [date, -u, +%s]
       changed_when: false
       register: calib_t0
 
-    # --entrypoint обязателен: ENTRYPOINT образа приёмника запускает Postfix
-    # и игнорирует переданную команду, поэтому без переопределения
-    # smtp-source не выполнялся бы вовсе, а калибровка «проходила» бы,
-    # ничего не измерив.
-    - name: Прогнать нагрузку напрямую в приёмник, минуя Postal
+    # --entrypoint is mandatory: the ENTRYPOINT of the sink image starts Postfix
+    # and ignores the command passed to it, so without the override
+    # smtp-source would not run at all and calibration would "pass"
+    # having measured nothing.
+    - name: Drive load straight into the sink, bypassing Postal
       ansible.builtin.command:
         argv:
           - docker
@@ -63,13 +63,13 @@
           - "{{ postfix_sink_addrs | first }}:{{ postfix_sink_port }}"
       changed_when: true
 
-    - name: Отметить время окончания
+    - name: Record the end time
       ansible.builtin.command:
         argv: [date, -u, +%s]
       changed_when: false
       register: calib_t1
 
-    - name: Снять счётчик приёмника после калибровки
+    - name: Read the sink counter after calibration
       ansible.builtin.shell:
         cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
       args:
@@ -78,49 +78,49 @@
       register: calib_after
       changed_when: false
 
-    # Скорость, а не количество. Проверка «дошли ли все сообщения» прошла бы
-    # и на приёмнике, который принимает их втрое медленнее нужного, —
-    # то есть охраняла бы не от того.
-    - name: Вычислить достигнутую скорость
+    # Rate, not count. A "did all messages arrive" check would also pass
+    # on a sink that accepts them three times slower than needed —
+    # i.e. it would guard against the wrong thing.
+    - name: Compute the achieved rate
       ansible.builtin.set_fact:
         calib_delivered: "{{ (calib_after.stdout | trim | int) - (calib_before.stdout | trim | int) }}"
         calib_seconds: "{{ [(calib_t1.stdout | trim | int) - (calib_t0.stdout | trim | int), 1] | max }}"
 
-    - name: Записать результат калибровки
+    - name: Write the calibration result
       ansible.builtin.copy:
         dest: "{{ bench_reports_dir }}/calibration-{{ calib_t1.stdout | trim }}.md"
         mode: "0644"
         content: |
-          # Калибровка вспомогательной цепи
+          # Calibration of the auxiliary chain
 
-          Генератор писем smtp-source отправлял напрямую в приёмник, минуя Postal.
+          The smtp-source message generator sent straight into the sink, bypassing Postal.
 
-          - принято приёмником: {{ calib_delivered }} сообщений за {{ calib_seconds }} с
-          - достигнутая скорость: {{ ((calib_delivered | int) / (calib_seconds | int)) | round(1) }} сообщений/с
-          - целевая скорость прогона: {{ bench_target_rate }} получателей/с
-          - требуемый запас: {{ bench_calibration_headroom }}x = {{ calib_rate }} сообщений/с
-          - размер сообщения: {{ bench_profiles[bench_profile].mime_size_bytes }} байт
+          - accepted by the sink: {{ calib_delivered }} messages in {{ calib_seconds }} s
+          - achieved rate: {{ ((calib_delivered | int) / (calib_seconds | int)) | round(1) }} messages/s
+          - target run rate: {{ bench_target_rate }} recipients/s
+          - required headroom: {{ bench_calibration_headroom }}x = {{ calib_rate }} messages/s
+          - message size: {{ bench_profiles[bench_profile].mime_size_bytes }} bytes
 
-          smtp-source работает в замкнутой модели: он шлёт настолько быстро,
-          насколько принимает приёмник, поэтому измеренная величина —
-          это потолок вспомогательной цепи, а не заданная скорость.
+          smtp-source works in a closed-loop model: it sends as fast as
+          the sink accepts, so the measured value is
+          the ceiling of the auxiliary chain, not a configured rate.
       delegate_to: localhost
       become: false
 
-    - name: Проверить запас относительно целевой скорости
+    - name: Check the headroom against the target rate
       ansible.builtin.assert:
         that:
           - (calib_delivered | int) >= (calib_messages | int)
           - ((calib_delivered | int) / (calib_seconds | int)) >= (calib_rate | int)
         fail_msg: >-
-          Вспомогательная цепь держит
-          {{ ((calib_delivered | int) / (calib_seconds | int)) | round(1) }} сообщений/с
-          при требуемых {{ calib_rate }} ({{ bench_calibration_headroom }}x
-          от {{ bench_target_rate }}). Прогон Postal измерял бы приёмник,
-          а не Postal. Проверьте in_flow_delay, default_process_limit,
-          smtpd_client_connection_count_limit и не упирается ли лог приёмника
-          в диск.
+          The auxiliary chain sustains
+          {{ ((calib_delivered | int) / (calib_seconds | int)) | round(1) }} messages/s
+          against the required {{ calib_rate }} ({{ bench_calibration_headroom }}x
+          of {{ bench_target_rate }}). A Postal run would be measuring the sink,
+          not Postal. Check in_flow_delay, default_process_limit,
+          smtpd_client_connection_count_limit and whether the sink log
+          is hitting the disk limit.
         success_msg: >-
-          Приёмник держит
-          {{ ((calib_delivered | int) / (calib_seconds | int)) | round(1) }} сообщений/с
-          при требуемых {{ calib_rate }} — запас подтверждён.
+          The sink sustains
+          {{ ((calib_delivered | int) / (calib_seconds | int)) | round(1) }} messages/s
+          against the required {{ calib_rate }} — headroom confirmed.

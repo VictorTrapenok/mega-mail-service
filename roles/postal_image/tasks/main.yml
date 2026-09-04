@@ -1,26 +1,26 @@
 ---
-# Приведение ссылки на образ Postal к неизменяемому digest'у.
+# Resolving the Postal image reference to an immutable digest.
 #
-# Тег для этого не годится: latest и stable на ghcr.io — движущиеся указатели
-# с разными digest'ами, плавающих тегов 3 и 3.3 не существует. Baseline,
-# закреплённый тегом, может измениться между первым и последним прогоном серии,
-# и вся серия окажется сравнением разных образов.
+# A tag is not good enough for this: latest and stable on ghcr.io are moving pointers
+# with different digests, and floating tags 3 and 3.3 do not exist. A baseline
+# pinned by a tag can change between the first and the last run of a series,
+# and the whole series then compares different images.
 
-- name: Отклонить движущиеся и неполные теги
+- name: Reject moving and incomplete tags
   ansible.builtin.assert:
     that:
       - postal_image_ref is not match('^(' + (postal_image_forbidden_refs | map('regex_replace', '\*', '.*') | join('|')) + ')$')
     fail_msg: >-
-      Тег «{{ postal_image_ref }}» запрещён для измерительных прогонов.
-      latest и stable движутся, а ci-* собран с --target ci без precompile
-      ассетов: web отдаёт 500, оставаясь «живым» для проверки на подключение.
-      Укажите версию или digest.
+      The tag "{{ postal_image_ref }}" is forbidden for measurement runs.
+      latest and stable move, and ci-* is built with --target ci without asset
+      precompilation: web returns 500 while still looking "alive" to a connection check.
+      Specify a version or a digest.
 
-- name: Определить, задан ли уже digest
+- name: Determine whether a digest is already given
   ansible.builtin.set_fact:
     postal_image_is_digest: "{{ postal_image_ref is match('^sha256:[0-9a-f]{64}$') }}"
 
-- name: Разрешить тег в digest индекса образа
+- name: Resolve the tag into the image index digest
   ansible.builtin.command:
     argv:
       - docker
@@ -34,7 +34,7 @@
   changed_when: false
   when: not postal_image_is_digest
 
-- name: Зафиксировать неизменяемую ссылку на образ
+- name: Pin the immutable image reference
   ansible.builtin.set_fact:
     postal_image_resolved: >-
       {{ postal_image_repo }}@{{
@@ -43,10 +43,10 @@
       }}
     cacheable: true
 
-- name: Загрузить образ
+- name: Pull the image
   community.docker.docker_image_pull:
     name: "{{ postal_image_resolved }}"
 
-- name: Показать, какой образ будет развёрнут
+- name: Show which image will be deployed
   ansible.builtin.debug:
-    msg: "Postal: {{ postal_image_resolved }} (из ссылки «{{ postal_image_ref }}»)"
+    msg: "Postal: {{ postal_image_resolved }} (from the reference \"{{ postal_image_ref }}\")"

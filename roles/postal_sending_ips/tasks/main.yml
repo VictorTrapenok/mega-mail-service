@@ -1,0 +1,122 @@
+---
+# Assigning the outbound addresses of the IP pool to the worker's interface.
+#
+# Postal binds the source address of an outbound SMTP socket, and it takes the candidates
+# from the interfaces of its own network namespace (Socket.ip_address_list), intersected
+# with the ip_addresses table. An address that exists in the database but not on the host
+# takes its queue rows out of circulation permanently and without a single log line, so
+# this role both assigns the addresses and proves they work.
+#
+# The inventory is the single source of truth: the same postal_sending_ips list feeds this
+# role, the pool seeding and the DNS zone, so the database and the host cannot diverge.
+
+- name: Determine the interface that carries the service address
+  ansible.builtin.shell:
+    cmd: ip -o -4 addr show | awk -v ip="{{ svc_ip }}" '$4 ~ "^"ip"/" {print $2; exit}'
+  args:
+    executable: /bin/bash
+  register: postal_sending_iface_raw
+  changed_when: false
+
+- name: Fix the interface and the set of managed addresses
+  ansible.builtin.set_fact:
+    postal_sending_iface: "{{ postal_sending_iface_raw.stdout | trim }}"
+    # The primary address is excluded: DHCP already owns it on the private network.
+    postal_sending_ips_managed: >-
+      {{ postal_sending_ips | default([]) | map(attribute='ipv4')
+         | reject('equalto', svc_ip) | list }}
+
+- name: Check that the interface was found
+  ansible.builtin.assert:
+    that:
+      - postal_sending_iface | length > 0
+    fail_msg: >-
+      No interface carries {{ svc_ip }}, so there is nowhere to add the outbound addresses.
+
+- name: Assign the missing addresses
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      added=0
+      for a in {{ postal_sending_ips_managed | join(' ') }}; do
+        if ! ip -o -4 addr show dev {{ postal_sending_iface }} | grep -qE "inet ${a}/"; then
+          ip addr add "${a}/32" dev {{ postal_sending_iface }}
+          added=$((added+1))
+        fi
+      done
+      echo "added=${added}"
+    executable: /bin/bash
+  register: postal_sending_added
+  changed_when: "'added=0' not in postal_sending_added.stdout"
+  when: postal_sending_ips_managed | length > 0
+
+# Written after the live assignment, so a broken template cannot take the running
+# interface down with it. netplan generate validates the schema without touching the link;
+# the file itself only takes effect on the next boot.
+- name: Persist the addresses for the next boot
+  ansible.builtin.template:
+    src: netplan.yaml.j2
+    dest: "{{ postal_sending_ips_netplan_file }}"
+    owner: root
+    group: root
+    # netplan warns about world-readable configuration and ignores such files in newer versions.
+    mode: "0600"
+  when: postal_sending_ips_managed | length > 0
+  notify: Validate the netplan configuration
+
+- name: Validate the persisted configuration now
+  ansible.builtin.meta: flush_handlers
+
+- name: Read back the addresses present on the interface
+  ansible.builtin.command:
+    argv: [ip, -o, -4, addr, show, dev, "{{ postal_sending_iface }}"]
+  register: postal_sending_present
+  changed_when: false
+
+# The point of the whole role. A missing address does not fail anything by itself —
+# it quietly removes a share of the queue from processing.
+- name: Check that every pool address is present on the host
+  ansible.builtin.assert:
+    that:
+      - postal_sending_present.stdout is search('inet ' ~ (item | regex_escape) ~ '/')
+    fail_msg: >-
+      {{ item }} is listed in postal_sending_ips but is absent from
+      {{ postal_sending_iface }}. Queue rows assigned to it would never be delivered.
+  loop: "{{ postal_sending_ips | default([]) | map(attribute='ipv4') | list }}"
+
+# Presence is not reachability, and reachability is not acceptance. Three different things
+# fail differently: an address absent from the host takes its queue rows out of circulation,
+# an address unknown to the provider's router routes nowhere, and an address missing from the
+# sink's mynetworks connects perfectly and is then refused at RCPT TO — turning every message
+# bound to it into a HardFail. Only a real SMTP transaction catches the third case, and it is
+# the one that actually happened here: five of six pool addresses failed while TCP was fine.
+- name: Check that every pool address is accepted for relaying by the sinks
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "-c"
+      - |
+        import smtplib, sys
+        src, dst, port, domain = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+        s = smtplib.SMTP(dst, port, local_hostname="probe." + domain,
+                         source_address=(src, 0), timeout=15)
+        try:
+            code, msg = s.docmd("MAIL", "FROM:<probe@%s>" % domain)
+            if code // 100 != 2:
+                raise SystemExit("MAIL FROM from %s refused: %s %s" % (src, code, msg))
+            code, msg = s.docmd("RCPT", "TO:<probe@%s>" % domain)
+            if code // 100 != 2:
+                raise SystemExit("RCPT TO from %s refused: %s %s" % (src, code, msg))
+            s.docmd("RSET")
+        finally:
+            try:
+                s.quit()
+            except Exception:
+                pass
+      - "{{ item[0] }}"
+      - "{{ item[1] }}"
+      - "{{ postfix_sink_port }}"
+      - "{{ postal_test_domain }}"
+  loop: "{{ (postal_sending_ips | default([]) | map(attribute='ipv4') | list) | product(postfix_sink_addrs) | list }}"
+  changed_when: false
+  when: postal_sending_ips_verify | bool

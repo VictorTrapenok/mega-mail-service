@@ -1,9 +1,9 @@
 ---
-- name: Определить имя хоста приёмника
+- name: Determine the sink hostname
   ansible.builtin.set_fact:
     postfix_sink_hostname: "sink-{{ (groups['postfix_sinks'].index(inventory_hostname) | int) + 1 }}.{{ postal_test_domain }}"
 
-- name: Создать каталоги приёмника
+- name: Create the sink directories
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
@@ -16,7 +16,7 @@
     - "{{ postfix_sink_dir }}/conf"
     - "{{ postfix_sink_dir }}/log"
 
-- name: Разложить контекст сборки образа
+- name: Lay out the image build context
   ansible.builtin.copy:
     src: "{{ item }}"
     dest: "{{ postfix_sink_dir }}/build/{{ item }}"
@@ -26,48 +26,48 @@
   loop:
     - Dockerfile
     - entrypoint.sh
-  notify: Пересобрать приёмник
+  notify: Rebuild the sink
 
-- name: Развернуть main.cf
+- name: Deploy main.cf
   ansible.builtin.template:
     src: main.cf.j2
     dest: "{{ postfix_sink_dir }}/conf/main.cf"
     owner: root
     group: root
     mode: "0644"
-  notify: Перезапустить приёмник
+  notify: Restart the sink
 
-- name: Развернуть master.cf
+- name: Deploy master.cf
   ansible.builtin.template:
     src: master.cf.j2
     dest: "{{ postfix_sink_dir }}/conf/master.cf"
     owner: root
     group: root
     mode: "0644"
-  notify: Перезапустить приёмник
+  notify: Restart the sink
 
-- name: Развернуть compose-файл приёмника
+- name: Deploy the sink compose file
   ansible.builtin.template:
     src: docker-compose.yml.j2
     dest: "{{ postfix_sink_dir }}/docker-compose.yml"
     owner: root
     group: root
     mode: "0644"
-  notify: Перезапустить приёмник
+  notify: Restart the sink
 
-- name: Собрать и запустить приёмник
+- name: Build and start the sink
   community.docker.docker_compose_v2:
     project_src: "{{ postfix_sink_dir }}"
     build: policy
     state: present
     wait: true
 
-- name: Применить отложенные обработчики приёмника
+- name: Apply the deferred sink handlers
   ansible.builtin.meta: flush_handlers
 
-# Наличие в системе процесса, способного открыть исходящее SMTP-соединение,
-# сводит на нет весь рубеж изоляции на стороне приёмника.
-- name: Убедиться, что служб доставки наружу нет
+# The presence of a process in the system capable of opening an outbound SMTP connection
+# defeats the entire containment line on the sink side.
+- name: Make sure there are no outbound delivery services
   ansible.builtin.command:
     argv:
       - docker
@@ -81,9 +81,62 @@
       - "-M"
   register: sink_master
   changed_when: false
-  # smtp/inet/smtpd — входящий сервер приёмника. Наружу умеют доставлять
-  # unix-транспорты smtp, relay, lmtp, local и virtual.
+  # smtp/inet/smtpd is the sink's inbound server. Outbound delivery is possible
+  # via the unix transports smtp, relay, lmtp, local and virtual.
   failed_when: >-
     sink_master.stdout_lines
     | select('match', '^(smtp|relay|lmtp|local|virtual)\\s+unix\\b')
     | list | length > 0
+
+# --- Artificial response latency -------------------------------------------
+# A sink that answers instantly measures the upper bound of Postal, not production
+# speed: draining is waiting on the network, and its ceiling equals concurrency
+# divided by the delivery latency. The delay is applied to the network rather than
+# to Postfix, so the sink remains a real Postfix with a queue and a discard transport.
+
+- name: Determine the interface that carries the service address
+  ansible.builtin.shell:
+    cmd: ip -o -4 addr show | awk -v ip="{{ svc_ip }}" '$4 ~ "^"ip"/" {print $2; exit}'
+  args:
+    executable: /bin/bash
+  register: sink_iface
+  changed_when: false
+
+- name: Check that the interface was found
+  ansible.builtin.assert:
+    that:
+      - (sink_iface.stdout | trim) | length > 0
+    fail_msg: >-
+      No interface carries {{ svc_ip }}. Without knowing it the delay would have to be
+      applied to every interface, and that would delay SSH along with SMTP.
+
+# Removing it unconditionally makes the state deterministic: a leftover qdisc from
+# a previous run would silently add latency to a run that did not ask for it.
+- name: Remove the previous traffic shaping
+  ansible.builtin.command:
+    argv: [tc, qdisc, del, dev, "{{ sink_iface.stdout | trim }}", root]
+  changed_when: true
+  failed_when: false
+
+- name: Apply the response delay
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      IFACE="{{ sink_iface.stdout | trim }}"
+      # prio sends everything the filter does not match into band 1:1, which has no
+      # delay attached. That is what keeps the control connection unaffected.
+      tc qdisc add dev "$IFACE" root handle 1: prio bands 3
+      tc qdisc add dev "$IFACE" parent 1:3 handle 30: netem delay {{ postfix_sink_response_delay_ms }}ms
+      tc filter add dev "$IFACE" protocol ip parent 1:0 prio 1 \
+        u32 match ip sport {{ postfix_sink_port }} 0xffff flowid 1:3
+    executable: /bin/bash
+  changed_when: true
+  when: (postfix_sink_response_delay_ms | int) > 0
+
+- name: Report the delay in effect
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'The sink answers with a delay of ' ~ postfix_sink_response_delay_ms ~ ' ms per response on '
+         ~ (sink_iface.stdout | trim)
+         if (postfix_sink_response_delay_ms | int) > 0
+         else 'The sink answers without an artificial delay: the result is an upper bound, not a forecast.' }}

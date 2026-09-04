@@ -1,16 +1,16 @@
-# Кэш фактов Ansible
+# Ansible fact cache
 .ansible_facts/
 *.retry
 
-# Артефакты прогонов: отчёты коммитим, сырые CSV — нет.
+# Run artifacts: reports are committed, raw CSV files are not.
 reports/**/raw/
 reports/**/*.csv.gz
 
-# Коллекции, установленные локально
+# Collections installed locally
 collections/
 
-# Секреты, которых в репозитории быть не должно:
-# deploy-key форка, креды registry, продовые DKIM-ключи, продовые дампы.
+# Secrets that must never be in the repository:
+# fork deploy key, registry credentials, production DKIM keys, production dumps.
 *.pem
 *.p12
 id_rsa*

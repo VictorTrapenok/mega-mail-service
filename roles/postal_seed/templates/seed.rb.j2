@@ -1,14 +1,14 @@
 # {{ ansible_managed }}
 #
-# Сидирование данных Postal.
+# Seeding of Postal data.
 #
-# Административного API у Postal нет: config/routes.rb отдаёт только
-# /api/v1/send/* и /api/v1/messages/*, остальное — HTML-контроллеры за сессией.
-# Единственная объектосоздающая CLI-команда, postal make-user, интерактивна
-# (HighLine). Прямой SQL опасен: Server в after_create создаёт свою message-БД,
-# Domain в before_create генерирует DKIM-ключ.
+# Postal has no administrative API: config/routes.rb exposes only
+# /api/v1/send/* and /api/v1/messages/*, everything else is HTML controllers behind a session.
+# The only object-creating CLI command, postal make-user, is interactive
+# (HighLine). Raw SQL is dangerous: Server creates its own message DB in after_create,
+# and Domain generates the DKIM key in before_create.
 #
-# Поэтому — rails runner, и только через модели.
+# Hence rails runner, and only through the models.
 
 require "json"
 
@@ -36,8 +36,8 @@ OrganizationUser.find_or_create_by!(organization_id: org.id, user_id: user.id) d
   ou.user_type = "User"
 end
 
-# Server в after_create вызывает message_db.provisioner.provision —
-# без этого отдельная база сообщений сервера просто не появится.
+# Server calls message_db.provisioner.provision in after_create —
+# without that the server's separate message database simply never appears.
 server = Server.find_or_initialize_by(organization_id: org.id,
                                       permalink: {{ postal_server_permalink | to_json }})
 if server.new_record?
@@ -46,9 +46,9 @@ if server.new_record?
   server.save!
 end
 
-# Лимит отправки и retention обнуляем: иначе часть писем уйдёт в Held
-# по send_limit, а суточная задача очистки может дропнуть raw-таблицу
-# посреди прогона. Это колонки сервера, а не переменные окружения.
+# We clear the send limit and retention: otherwise some messages end up Held
+# because of send_limit, and the daily cleanup task may drop the raw table
+# in the middle of a run. These are server columns, not environment variables.
 server.update_columns(
   send_limit: nil,
   message_retention_days: nil,
@@ -67,11 +67,11 @@ if domain.new_record?
   domain.save!
 end
 
-# Credential#generate_key безусловно выставляет ключ новой записи, а
-# validate_key_cannot_be_changed запрещает менять его через модель. Поэтому
-# фиксируем значение через update_column: иначе повторный запуск сидирования
-# молча ротировал бы ключи, генератор начал бы получать 535, и это выглядело бы
-# как регрессия тестируемой сборки.
+# Credential#generate_key unconditionally sets the key of a new record, and
+# validate_key_cannot_be_changed forbids changing it through the model. Hence we
+# pin the value via update_column: otherwise re-running the seed
+# would silently rotate the keys, the generator would start getting 535, and that would look
+# like a regression of the build under test.
 def pin_credential(server, type, name, key)
   cred = Credential.find_or_initialize_by(server_id: server.id, type: type, name: name)
   cred.save! if cred.new_record?
@@ -89,10 +89,10 @@ server.update_column(:ip_pool_id, pool.id)
 
 {% for h in groups['postal_workers'] | default([]) %}
 {% for ip in hostvars[h].postal_sending_ips | default([]) %}
-# Адрес обязан физически присутствовать на воркере: он берёт из очереди только
-# строки, чей ip_address_id совпал с адресом его собственного netns или равен
-# NULL. Иначе очередь встаёт молча — осиротевшие строки не видит даже
-# tidy-задача, потому что у них locked_at IS NULL.
+# The address must be physically present on the worker: it only takes rows from the
+# queue whose ip_address_id matched an address of its own netns or is
+# NULL. Otherwise the queue stalls silently — the orphaned rows are not even seen by the
+# tidy task, because their locked_at IS NULL.
 IPAddress.find_or_create_by!(ipv4: {{ ip.ipv4 | to_json }}) do |a|
   a.ip_pool_id = pool.id
   a.hostname = {{ ip.hostname | to_json }}
@@ -103,18 +103,18 @@ end
 {% endif %}
 
 {% if postal_force_domain_verification %}
-# Обход проверки DNS. Отмечается в отчёте как снижение достоверности:
-# единственный гейт на отправку — verified_at, но резолвинг всё равно остаётся
-# на горячем пути доставки и является самостоятельным кандидатом в узкое место.
+# Bypassing the DNS check. Flagged in the report as reduced credibility:
+# the only gate on sending is verified_at, but resolution still remains
+# on the hot delivery path and is a bottleneck candidate in its own right.
 domain.mark_as_verified unless domain.verified?
 {% endif %}
 
 domain.reload
 
-# Имя базы сообщений нужно сверке и сэмплеру очереди. Берём у самого Postal.
-# Запасного пути здесь сознательно нет: неверное имя базы означало бы, что
-# вся сверка молча считает пустую выборку, и падение на этом месте
-# предпочтительнее.
+# The message database name is needed by the reconciliation and the queue sampler. We take it
+# from Postal itself. There is deliberately no fallback here: a wrong database name would mean
+# that the whole reconciliation silently counts an empty selection, and failing at this point
+# is preferable.
 message_db_name = server.message_db.database_name
 
 puts "POSTAL_SEED_JSON:" + {

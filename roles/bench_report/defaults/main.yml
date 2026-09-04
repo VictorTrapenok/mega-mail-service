@@ -1,15 +1,15 @@
 ---
-# Вид прогона, о котором собирается отчёт:
+# The kind of run the report is being built for:
 #
-#   combined — приём и разбор очереди одновременно (playbooks/benchmark.yml);
-#   ingress  — только приём, воркеры остановлены (playbooks/ingress.yml);
-#   drain    — только разбор заранее набитой очереди (playbooks/drain.yml).
+#   combined — ingress and queue draining at the same time (playbooks/benchmark.yml);
+#   ingress  — ingress only, workers stopped (playbooks/ingress.yml);
+#   drain    — draining of a pre-filled queue only (playbooks/drain.yml).
 #
-# Раздельные виды существуют потому, что в комбинированном прогоне приём
-# и доставка конкурируют за одни ядра и одну БД, и одно число на выходе
-# не позволяет сказать, какая из двух половин не дотягивает до цели.
+# The separate kinds exist because in a combined run ingress
+# and delivery compete for the same cores and the same DB, and a single output number
+# does not tell which of the two halves is falling short of the target.
 bench_report_kind: combined
 
-# Фаза генератора, чью сводку берём за результат. В прогоне дренажа рабочей
-# фазы нет вовсе: письма создаются набивкой, а измеряется уже разбор очереди.
+# The generator phase whose summary is taken as the result. In a drain run there is no
+# working phase at all: the messages are created by the fill, and what is measured is the draining.
 bench_report_loadgen_phase: "{{ 'prefill' if bench_report_kind == 'drain' else 'steady' }}"

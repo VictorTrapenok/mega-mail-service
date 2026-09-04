@@ -1,15 +1,15 @@
 ---
-# Лимиты ресурсов контейнеров.
+# Container resource limits.
 #
-# Проверено по pkg/compose/create.go: в обычном (не swarm) docker compose
-# работают deploy.resources.limits.{cpus,memory,pids} и reservations.memory,
-# а reservations.cpus молча игнорируется. deploy применяется ПОСЛЕ верхнеуровневых
-# cpus/mem_limit и перекрывает их, поэтому задаём только deploy.
+# Verified against pkg/compose/create.go: in plain (non-swarm) docker compose,
+# deploy.resources.limits.{cpus,memory,pids} and reservations.memory take effect,
+# while reservations.cpus is silently ignored. deploy is applied AFTER the top-level
+# cpus/mem_limit and overrides them, so we set deploy only.
 #
-# cpuset_cpus предпочтительнее cpus для сравнительных прогонов: квота CFS душит
-# контейнер на границах 100-мс периодов, показывая при этом среднюю загрузку
-# заметно ниже 100 %, и две сборки под разными эффективными квотами несравнимы.
-# На single-host это единственный способ развести SUT, sink и генератор по ядрам.
+# cpuset_cpus is preferable to cpus for comparative runs: the CFS quota throttles
+# the container at 100 ms period boundaries while reporting an average load noticeably
+# below 100 %, and two builds running under different effective quotas are not comparable.
+# On a single host this is the only way to spread the SUT, the sink and the generator across cores.
 
 postal_limits:
   web:
@@ -26,24 +26,24 @@ mariadb_limits:
   cpus: "4.0"
   memory: "8g"
 
-# Балансировщик событийный и на этих скоростях почти ничего не потребляет,
-# но лимит задан явно: без него он конкурировал бы за ядра с тем, что измеряем.
+# The balancer is event-driven and consumes almost nothing at these rates,
+# but the limit is set explicitly: without it, it would compete for cores with what we measure.
 postal_lb_limits:
   cpus: "1.0"
   memory: "512m"
 
 sink_limits:
   cpus: "2.0"
-  # Должно перекрывать postfix_sink_spool_tmpfs_size: страницы tmpfs
-  # учитываются в памяти контейнера.
+  # Must exceed postfix_sink_spool_tmpfs_size: tmpfs pages
+  # count towards the container's memory.
   memory: "4g"
 
 loadgen_limits:
   cpus: "2.0"
   memory: "2g"
 
-# Привязка к ядрам. Пусто = не привязывать (распределённый режим,
-# где компоненты и так на разных машинах).
+# CPU pinning. Empty = do not pin (distributed mode,
+# where the components already sit on different machines).
 postal_cpuset: ""
 mariadb_cpuset: ""
 sink_cpuset: ""

@@ -1,22 +1,22 @@
 ---
-# Один измеряемый прогон.
+# A single measured run.
 #
-# Плейбук НЕидемпотентен по замыслу и не входит в критерий повторяемости.
+# The playbook is NON-idempotent by design and is not part of the repeatability criterion.
 
-- name: Собрать факты со всех хостов
+- name: Gather facts from all hosts
   hosts: all
   gather_facts: true
   tasks: []
 
-# Идентификатор прогона вычисляется ОДИН раз и раздаётся всем хостам фактом.
-# Как переменная плея он был бы недоступен следующему плею через hostvars,
-# а вычисленный из ansible_date_time — совпадал бы у двух подряд идущих
-# прогонов, потому что этот факт снимается один раз и кэшируется.
-- name: Присвоить идентификатор прогона
+# The run identifier is computed ONCE and distributed to all hosts as a fact.
+# As a play variable it would be unavailable to the next play via hostvars,
+# and if computed from ansible_date_time it would be identical for two consecutive
+# runs, because that fact is taken once and cached.
+- name: Assign the run identifier
   hosts: all
   gather_facts: false
   tasks:
-    - name: Взять время живыми часами
+    - name: Take the time from a live clock
       ansible.builtin.command:
         argv: [date, -u, "+%Y%m%dT%H%M%SZ"]
       delegate_to: localhost
@@ -24,14 +24,14 @@
       changed_when: false
       register: run_clock
 
-    - name: Зафиксировать идентификатор прогона
+    - name: Pin the run identifier
       ansible.builtin.set_fact:
         bench_run_id: "{{ lookup('env', 'BENCH_RUN_ID') | default(run_clock.stdout | trim, true) }}"
 
-- name: Подготовить состояние перед прогоном
+- name: Prepare the state before the run
   ansible.builtin.import_playbook: reset.yml
 
-- name: Выполнить прогон
+- name: Execute the run
   hosts: postal_main_db:postal_workers:postal_smtp:postfix_sinks:load_generators
   become: true
   vars:
@@ -45,18 +45,18 @@
       vars:
         bench_samplers_state: stopped
 
-- name: Собрать отчёт
+- name: Collect the report
   hosts: postal_main_db
   become: true
   vars:
     db_host: "{{ groups['postal_main_db'] | first }}"
     postal_seed: "{{ hostvars[groups['postal_admin'] | first].postal_seed }}"
-    # Факт живёт только в кэше: его ставит роль postal_image при развёртывании.
-    # Прогон не должен падать из-за пустого кэша — фактически запущенный образ
-    # отчёт всё равно читает с хоста через docker inspect, и это достовернее.
+    # The fact only lives in the cache: it is set by the postal_image role during deployment.
+    # A run must not fail because of an empty cache — the report reads the actually running
+    # image from the host via docker inspect anyway, and that is more reliable.
     postal_image_resolved: >-
       {{ hostvars[groups['postal_workers'] | first].postal_image_resolved
-         | default('не определён: кэш фактов пуст, см. фактически запущенный образ', true) }}
+         | default('undetermined: the fact cache is empty, see the actually running image', true) }}
     bench_window_start: "{{ hostvars[db_host].bench_window_start }}"
     bench_window_end: "{{ hostvars[db_host].bench_window_end }}"
     bench_drain_end: "{{ hostvars[db_host].bench_drain_end }}"

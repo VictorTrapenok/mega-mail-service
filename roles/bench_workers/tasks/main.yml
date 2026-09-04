@@ -1,23 +1,23 @@
 ---
-# Перевод воркеров доставки в заданное состояние.
+# Moving the delivery workers to a given state.
 #
-# Нужна, чтобы измерять приём и разбор очереди по отдельности. При работающих
-# воркерах эти два процесса конкурируют за одни и те же ядра и одну и ту же
-# БД, и одно число на выходе не позволяет сказать, какая из двух половин
-# не дотягивает до цели.
+# Needed in order to measure ingress and queue draining separately. With the workers
+# running, these two processes compete for the same cores and the same
+# DB, and a single output number does not tell which of the two halves
+# is falling short of the target.
 #
-# Роль НЕидемпотентна по смыслу: она меняет состояние стенда по требованию
-# плейбука, а не приводит его к описанному в inventory виду.
+# The role is NON-idempotent by intent: it changes the bench state on the playbook's
+# demand rather than bringing it to the shape described in the inventory.
 
-- name: Перечислить сервисы воркеров
+- name: Enumerate the worker services
   ansible.builtin.set_fact:
     bench_worker_services: >-
       {{ range(1, (postal_worker_replicas | int) + 1) | map('regex_replace', '^', 'worker') | list }}
 
-# Роль подключается и из широких плеев измерения, где кроме воркеров есть
-# генератор и приёмник. На них compose-файла Postal нет вовсе, поэтому
-# принадлежность группе проверяется в самой роли, а не только в плейбуке.
-- name: Остановить воркеры
+# The role is also included from broad measurement plays, which besides the workers cover
+# the generator and the sink. Those have no Postal compose file at all, so
+# group membership is checked inside the role, not only in the playbook.
+- name: Stop the workers
   ansible.builtin.command:
     argv: >-
       {{ ['docker', 'compose', '-f', postal_dir ~ '/docker-compose.yml', 'stop']
@@ -27,26 +27,26 @@
     - bench_workers_state == 'stopped'
     - inventory_hostname in groups['postal_workers']
 
-- name: Убедиться, что ни один воркер не работает
+- name: Make sure no worker is running
   ansible.builtin.command:
     argv: [docker, compose, -f, "{{ postal_dir }}/docker-compose.yml", ps, --status, running, --services]
   changed_when: false
   register: bench_running_services
-  # Иначе измерение приёма молча получило бы работающего конкурента, а вывод
-  # о скорости приёма оказался бы завышенным на неизвестную величину.
+  # Otherwise the ingress measurement would silently get a running competitor, and the
+  # conclusion about the ingress rate would be overstated by an unknown amount.
   failed_when: >-
     bench_running_services.stdout_lines | select('in', bench_worker_services) | list | length > 0
   when:
     - bench_workers_state == 'stopped'
     - inventory_hostname in groups['postal_workers']
 
-# Остановка оставляет захваченные строки залоченными: bin/postal запускает Ruby
-# без exec, поэтому PID 1 внутри контейнера — это bash, и обработчики сигналов
-# на docker stop не срабатывают. Такие строки не подберёт и уборочная задача:
-# она реагирует только на лок старше queued_message_lock_stale_days, то есть
-# через 30 суток. Без разлочки они выпадают из очереди навсегда, дренаж
-# не доходит до нуля, а сверка показывает недостачу без объяснения.
-- name: Снять осиротевшие локи очереди
+# Stopping leaves the claimed rows locked: bin/postal starts Ruby
+# without exec, so PID 1 inside the container is bash, and the signal handlers
+# do not fire on docker stop. Such rows are not picked up by the cleanup task either:
+# it only reacts to a lock older than queued_message_lock_stale_days, i.e.
+# after 30 days. Without unlocking they fall out of the queue forever, the drain
+# never reaches zero, and the reconciliation shows an unexplained shortfall.
+- name: Clear orphaned queue locks
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -62,7 +62,7 @@
   run_once: true
   when: bench_workers_state == 'stopped'
 
-- name: Запустить воркеры
+- name: Start the workers
   ansible.builtin.command:
     argv: >-
       {{ ['docker', 'compose', '-f', postal_dir ~ '/docker-compose.yml', 'start']
@@ -72,10 +72,10 @@
     - bench_workers_state == 'running'
     - inventory_hostname in groups['postal_workers']
 
-# Момент, с которого воркер действительно берёт задания, определяет знаменатель
-# скорости дренажа. Без ожидания готовности в измеряемое время попал бы ещё
-# и запуск Ruby, а это единицы секунд на прогон длиной в минуты.
-- name: Дождаться готовности воркеров
+# The moment from which a worker actually takes jobs determines the denominator
+# of the drain rate. Without waiting for readiness, the measured time would also include
+# the Ruby startup, and that is several seconds on a run lasting minutes.
+- name: Wait for the workers to become ready
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ (postal_worker_health_port_base | int) + item }}/health"
     status_code: [200]

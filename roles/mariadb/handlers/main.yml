@@ -1,5 +1,5 @@
 ---
-- name: Перезапустить MariaDB
+- name: Restart MariaDB
   community.docker.docker_compose_v2:
     project_src: "{{ mariadb_dir }}"
     state: restarted

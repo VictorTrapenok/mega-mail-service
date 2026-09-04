@@ -1,15 +1,15 @@
 ---
-# Изоляция стенда: запрет исходящего SMTP куда-либо, кроме хостов стенда.
+# Bench containment: outbound SMTP is forbidden anywhere except the bench hosts.
 #
-# Это второй рубеж. Первый — внутренний DNS без forwarder'ов, из-за которого
-# внешние домены просто не резолвятся. Третий — sink, в master.cf которого
-# вообще нет служб доставки наружу. Каждый рубежа достаточно самого по себе;
-# цена ошибки — репутация реальных отправляющих IP, поэтому их три.
+# This is the second line of defence. The first is the internal DNS without forwarders,
+# because of which external domains simply do not resolve. The third is the sink, whose
+# master.cf contains no outbound delivery services at all. Each line is sufficient on its own;
+# the cost of a mistake is the reputation of real sending IPs, which is why there are three.
 
 containment_ports: [25, 465, 587]
 containment_allowed_addrs: "{{ stand_cidr }}"
 
-# reject, а не drop: молчаливое отбрасывание заставляет Postal ждать
-# SMTP_CLIENT_OPEN_TIMEOUT (по умолчанию 30 с) на каждой попытке,
-# и прогон превращается в измерение таймаутов.
+# reject rather than drop: silently dropping makes Postal wait for
+# SMTP_CLIENT_OPEN_TIMEOUT (30 s by default) on every attempt,
+# and the run turns into a measurement of timeouts.
 containment_verdict: "reject with tcp reset"

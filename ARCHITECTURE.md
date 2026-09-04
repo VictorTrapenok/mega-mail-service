@@ -1,104 +1,104 @@
-# Архитектура
+# Architecture
 
-Оглавление документации проекта. Детали живут в отдельных файлах, здесь —
-только ссылки и общие принципы.
+The table of contents for the project documentation. Details live in separate files; here
+there are only links and general principles.
 
-## Документы
+## Documents
 
-| Документ | О чём |
+| Document | What it covers |
 |---|---|
-| [postal-benchmark-ansible-task.md](postal-benchmark-ansible-task.md) | Требования к стенду и критерии приёмки |
-| [POSTAL_OPTIMIZATION_GUIDE.md](POSTAL_OPTIMIZATION_GUIDE.md) | Методология измерений и последовательность оптимизации |
-| [docs/postal-internals.md](docs/postal-internals.md) | Подтверждённые особенности Postal 3.3.7 с путями к исходникам |
-| [README.md](README.md) | Команды запуска |
-| [roadmap.md](roadmap.md) | Что отложено и почему |
+| [postal-benchmark-ansible-task.md](postal-benchmark-ansible-task.md) | Bench requirements and acceptance criteria |
+| [POSTAL_OPTIMIZATION_GUIDE.md](POSTAL_OPTIMIZATION_GUIDE.md) | Measurement methodology and the optimisation sequence |
+| [docs/postal-internals.md](docs/postal-internals.md) | Confirmed Postal 3.3.7 internals with paths into the sources |
+| [README.md](README.md) | Commands for running things |
+| [roadmap.md](roadmap.md) | What has been deferred and why |
 
-## Из чего состоит стенд
+## What the bench consists of
 
-Развёртывание описано Ansible; размещение сервисов определяется **только**
-inventory. Два примера: `single-host` для отладки и `distributed` минимум
-на две машины для измерений.
+The deployment is described in Ansible; the placement of services is determined **only**
+by the inventory. Two examples: `single-host` for debugging and `distributed` on at least
+two machines for measurements.
 
 ```
-Генератор (k6, открытая модель)
+Generator (k6, open model)
     │ HTTP API
     ▼
-Postal: web / smtp-server / worker   ← MariaDB (main + message DB, очередь)
-    │ SMTP, MX из внутреннего DNS
+Postal: web / smtp-server / worker   ← MariaDB (main + message DB, the queue)
+    │ SMTP, MX from the internal DNS
     ▼
 Postfix sink → discard
 ```
 
-Роли сгруппированы по назначению:
+The roles are grouped by purpose:
 
-- **Подготовка хоста** — `common`, `docker_host`, `containment`.
-- **Инфраструктура** — `test_dns`, `mariadb`.
-- **Система под тестом** — `postal_image`, `postal_app`, `postal_schema`, `postal_seed`.
-- **Измерительный контур** — `postfix_sink`, `loadgen`, `bench_samplers`,
+- **Host preparation** — `common`, `docker_host`, `containment`.
+- **Infrastructure** — `test_dns`, `mariadb`.
+- **System under test** — `postal_image`, `postal_app`, `postal_schema`, `postal_seed`.
+- **Measurement environment** — `postfix_sink`, `loadgen`, `bench_samplers`,
   `bench_report`, `bench_reset`.
-- **Измерения** — `bench_run` (приём и разбор вместе), `bench_ingress` (только
-  приём), `bench_prefill` + `bench_drain` (только разбор), `bench_workers`
-  (перевод воркеров в нужное состояние).
+- **Measurements** — `bench_run` (ingress and draining together), `bench_ingress` (ingress
+  only), `bench_prefill` + `bench_drain` (draining only), `bench_workers`
+  (moving the workers to the required state).
 
-## Принципы
+## Principles
 
-**Единица нагрузки — получатель, а не письмо.** Postal создаёт отдельное
-сообщение на каждого адресата и хранит копию MIME для каждого. Все счётчики
-и отчёты считают получателей.
+**The unit of load is a recipient, not a message.** Postal creates a separate
+message for each addressee and stores a copy of the MIME for each. All counters
+and reports count recipients.
 
-**Приём и разбор очереди измеряются раздельно.** В одном прогоне они конкурируют
-за одни ядра и одну БД, а очередь между ними скрывает разницу: пока она растёт,
-приём принимает быстрее, чем доставка отдаёт, и деление принятого на длину окна
-выдаёт задел за выполненную работу. Заголовочное число комбинированного прогона —
-**устойчивая пропускная способность**, считающая доставленное за всё время
-вместе с дренажем. Раздельные прогоны дают два независимых числа и сразу
-показывают, какая из половин не дотягивает до цели.
+**Ingress and queue draining are measured separately.** In a single run they compete
+for the same cores and the same DB, while the queue between them hides the difference: while it
+grows, ingress accepts faster than delivery hands off, and dividing what was accepted by the
+window length passes a backlog off as completed work. The headline number of a combined run is
+**sustained throughput**, which counts what was delivered over the whole time
+including the drain. Separate runs give two independent numbers and immediately
+show which of the halves falls short of the target.
 
-**Длина и состав очереди — параметры измерения, а не фон.** Ни один из двух
-горячих запросов воркера не покрыт индексом, поэтому напрашивается вывод, что
-стоимость обработки письма растёт с длиной очереди. На диапазоне до десяти тысяч
-строк измерение этого не показало: скорость разбора одинакова. Порог, за которым
-непокрытый скан начинает доминировать, лежит выше — и пока он не найден,
-величину очереди в прогоне следует задавать и указывать в отчёте явно,
-а не считать фоном. Подробности и числа — в
+**The length and composition of the queue are measurement parameters, not background.** Neither
+of the two hot worker queries is covered by an index, which suggests that
+the cost of processing a message grows with the queue length. Over a range of up to ten thousand
+rows the measurement did not show this: the drain rate is the same. The threshold beyond which
+an uncovered scan starts to dominate lies higher — and until it is found,
+the queue size in a run should be set and stated explicitly in the report
+rather than treated as background. Details and numbers are in
 [docs/postal-internals.md](docs/postal-internals.md).
 
-**Изоляция обеспечивается тремя независимыми рубежами**, каждого достаточно
-самого по себе: DNS без forwarder'ов (внешние MX не резолвятся вообще),
-правила nftables со счётчиком попыток, отсутствие служб исходящей доставки
-в конфигурации приёмника. Smoke-тест проверяет каждый рубеж отдельно
-и привязывается к конкретному письму, а не к содержимому лога вообще.
+**Containment is provided by three independent lines of defence**, each sufficient
+on its own: DNS without forwarders (external MX records do not resolve at all),
+nftables rules with an attempt counter, and the absence of outbound delivery services
+in the sink configuration. The smoke test checks each line separately
+and ties itself to a specific message rather than to the log content in general.
 
-**Идемпотентны только конфигурационные плейбуки.** `reset`, `calibrate`
-и `benchmark` неидемпотентны по замыслу: протокол сравнения требует
-одинакового стартового состояния перед каждым прогоном.
+**Only the configuration playbooks are idempotent.** `reset`, `calibrate`
+and `benchmark` are non-idempotent by design: the comparison protocol requires
+an identical starting state before every run.
 
-**Числа без сверки не считаются результатом.** Сборка, «ускорившаяся»
-за счёт молча потерянных писем, в отчёте неотличима от настоящей оптимизации,
-поэтому сверка по корзинам состояний входит в каждый прогон.
+**Numbers without reconciliation do not count as a result.** A build that "sped up"
+thanks to silently lost messages is indistinguishable in the report from a genuine optimisation,
+so reconciliation by state buckets is part of every run.
 
-**Вспомогательная цепь калибруется до прогона.** Дефолты Postfix ограничивают
-приём раньше, чем упирается Postal, и просадка выглядит как результат измерения
+**The auxiliary chain is calibrated before a run.** The Postfix defaults limit
+ingress before Postal tops out, and the slowdown looks like a measurement result for
 Postal.
 
-## Глоссарий
+## Glossary
 
-| Термин | Значение |
+| Term | Meaning |
 |---|---|
-| **recipients** | Адресаты с собственным состоянием доставки. Главная метрика — `recipients/s` |
-| **messages** | Уникальные логические письма (MIME). В основном профиле совпадают с получателями |
-| **accepted** | Postal ответил `250` или успешным HTTP-ответом |
-| **attempted** | Воркер начал попытку доставки |
-| **delivered** | Следующий SMTP-сервер ответил успешно. В стенде считается независимо, по логу приёмника |
-| **deferred** | Временная ошибка, ожидается повтор. В Postal это `SoftFail` |
-| **held** | Письмо удержано: список подавления, `send_limit`, режим сервера или его приостановка |
-| **in_flight** | Строка очереди захвачена воркером (`locked_at` не пуст), но ещё не завершена |
-| **run_class** | `debug` — компоненты делят железо, для сравнения сборок непригодно; `scored` — разнесены |
-| **шумовой пол** | Разброс между повторами одной и той же сборки. Прирост меньше него объявлять победой нельзя |
-| **sink** | Приёмник писем: Postfix, принимающий по SMTP штатно и выбрасывающий через `discard` |
-| **открытая модель** | Генератор держит расписание отправок независимо от отклика системы. Замкнутая занижает хвост латентности |
-| **скорость приёма** | Сколько получателей в секунду Postal записывает в БД и ставит в очередь. Меряется `ingress.yml` при остановленных воркерах |
-| **скорость разбора** | Сколько получателей в секунду воркеры вынимают из очереди и доставляют. Меряется `drain.yml` на заранее набитой очереди |
-| **устойчивая пропускная способность** | Доставлено за всё время прогона, включая дренаж. Единственное число, которое можно переносить на сутки; скорость приёма для этого не годится |
-| **отложенная доля** | Часть очереди с `retry_after` в будущем. Воспроизводит вырождение очереди в проде: неготовые строки в голове таблицы превращают захват из O(1) в полный перебор |
-| **режим burst** | Набивка очереди генератором на максимальной скорости, без расписания. Латентность в нём измеряет сам генератор и в выводы не идёт |
+| **recipients** | Addressees with their own delivery state. The main metric is `recipients/s` |
+| **messages** | Unique logical messages (MIME). In the primary profile they coincide with recipients |
+| **accepted** | Postal answered `250` or with a successful HTTP response |
+| **attempted** | The worker started a delivery attempt |
+| **delivered** | The next SMTP server answered successfully. On the bench this is counted independently, from the sink log |
+| **deferred** | A temporary error, a retry is expected. In Postal this is `SoftFail` |
+| **held** | The message is held: the suppression list, `send_limit`, the server mode or its suspension |
+| **in_flight** | A queue row has been claimed by a worker (`locked_at` is not empty) but is not yet finished |
+| **run_class** | `debug` — the components share hardware, unsuitable for comparing builds; `scored` — they are split apart |
+| **noise floor** | The spread between repeats of the same build. A gain smaller than it must not be declared a win |
+| **sink** | The mail sink: Postfix that accepts over SMTP in the normal way and discards via `discard` |
+| **open model** | The generator keeps its sending schedule regardless of the system's response. A closed one understates the latency tail |
+| **ingress rate** | How many recipients per second Postal writes to the DB and enqueues. Measured by `ingress.yml` with the workers stopped |
+| **drain rate** | How many recipients per second the workers take out of the queue and deliver. Measured by `drain.yml` on a pre-filled queue |
+| **sustained throughput** | What was delivered over the whole run time, including the drain. The only number that can be extrapolated to a full day; the ingress rate is not suitable for that |
+| **deferred share** | The part of the queue with `retry_after` in the future. Reproduces queue degeneration in production: not-ready rows at the head of the table turn the claim from O(1) into a full scan |
+| **burst mode** | Filling the queue with the generator at maximum speed, without a schedule. Latency in it measures the generator itself and does not feed conclusions |

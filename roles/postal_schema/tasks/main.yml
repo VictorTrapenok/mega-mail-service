@@ -1,17 +1,17 @@
 ---
-# postal initialize — это `rake db:create postal:update`. В версии 3 задача
-# postal:update ветвится: если таблица schema_migrations существует и не пуста,
-# выполняется db:migrate, иначе db:schema:load. Поэтому повторный запуск
-# на уже инициализированной установке безопасен.
+# postal initialize is `rake db:create postal:update`. In version 3 the
+# postal:update task branches: if the schema_migrations table exists and is not empty,
+# db:migrate runs, otherwise db:schema:load. Hence re-running it
+# on an already initialised installation is safe.
 #
-# Важное отличие от версии 2, где initialize был безусловным
-# db:create db:schema:load db:seed и при повторе действительно ронял схему.
+# An important difference from version 2, where initialize was an unconditional
+# db:create db:schema:load db:seed and re-running it really did destroy the schema.
 #
-# Единственный опасный край: если schema_migrations пуста, а данные есть,
-# ветка db:schema:load пересоздаст таблицы (schema.rb использует
-# force: :cascade). В штатной работе это не воспроизводится.
+# The only dangerous edge: if schema_migrations is empty but data exists,
+# the db:schema:load branch will recreate the tables (schema.rb uses
+# force: :cascade). This does not occur during normal operation.
 
-- name: Дождаться доступности MariaDB
+- name: Wait for MariaDB to become available
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -25,7 +25,7 @@
   delay: 5
   changed_when: false
 
-- name: Инициализировать схему Postal
+- name: Initialise the Postal schema
   ansible.builtin.command:
     argv:
       - docker
@@ -43,7 +43,7 @@
   register: postal_init
   changed_when: "'Nothing to do' not in postal_init.stdout"
 
-- name: Проверить, что основная схема создана
+- name: Check that the main schema was created
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
     login_port: "{{ mariadb_port }}"
@@ -55,7 +55,7 @@
   changed_when: false
   failed_when: (schema_check.query_result[0][0].n | int) == 0
 
-- name: Проверить HTTP web после инициализации схемы
+- name: Check web over HTTP after the schema has been initialised
   ansible.builtin.uri:
     url: "http://{{ postal_web_addrs | first }}:{{ postal_web_port }}/login"
     headers:
@@ -67,7 +67,7 @@
   delay: 3
   changed_when: false
 
-- name: Зафиксировать версию схемы для отчёта
+- name: Record the schema version for the report
   ansible.builtin.set_fact:
     stand_schema_migrations: "{{ schema_check.query_result[0][0].n }}"
     cacheable: true

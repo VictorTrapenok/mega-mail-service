@@ -1,13 +1,13 @@
 ---
-# Обход проверки домена через DNS.
+# Bypassing domain verification through DNS.
 #
-# По умолчанию выключен: записи отдаёт наш собственный резолвер, и проверка
-# должна проходить честно. Резолвинг остаётся на горячем пути доставки
-# (Postal открывает новый Resolv::DNS на каждый запрос, не меньше трёх запросов
-# на доставку) и сам по себе является кандидатом в узкое место — обходя
-# верификацию, легко получить стенд, в котором DNS не проверен вообще.
+# Disabled by default: the records are served by our own resolver, and verification
+# must pass honestly. Resolution stays on the hot delivery path
+# (Postal opens a new Resolv::DNS per query, at least three queries
+# per delivery) and is itself a bottleneck candidate — by bypassing
+# verification it is easy to end up with a bench whose DNS was never checked at all.
 #
-# Если включить, факт попадает в отчёт как снижение достоверности прогона.
+# If enabled, the fact goes into the report as a reduction in the run's credibility.
 postal_force_domain_verification: false
 
 postal_seed_script: /opt/postal-bench/postal/scripts/seed.rb

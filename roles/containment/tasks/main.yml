@@ -1,5 +1,5 @@
 ---
-- name: Создать каталог правил nftables
+- name: Create the nftables rules directory
   ansible.builtin.file:
     path: /etc/nftables.d
     state: directory
@@ -7,20 +7,20 @@
     group: root
     mode: "0755"
 
-# Без validate осознанно: идиома атомарной перезаливки (add + delete) не
-# проходит проверку `nft -c`, потому что в режиме проверки таблица реально
-# не создаётся и удалять оказывается нечего. Само правило проверяется тем,
-# что обработчик его применяет, и падает громко, если оно неверно.
-- name: Установить правила изоляции SMTP
+# Deliberately without validate: the atomic reload idiom (add + delete) does not
+# pass `nft -c`, because in check mode the table is not actually created
+# and there turns out to be nothing to delete. The rule itself is validated by the fact
+# that the handler applies it, and it fails loudly if the rule is wrong.
+- name: Install the SMTP containment rules
   ansible.builtin.template:
     src: mailguard.nft.j2
     dest: /etc/nftables.d/mailguard.nft
     owner: root
     group: root
     mode: "0755"
-  notify: Перезагрузить mailguard
+  notify: Reload mailguard
 
-- name: Загружать mailguard при старте
+- name: Load mailguard at boot
   ansible.builtin.copy:
     dest: /etc/systemd/system/mailguard.service
     owner: root
@@ -28,7 +28,7 @@
     mode: "0644"
     content: |
       [Unit]
-      Description=Изоляция исходящего SMTP тестового стенда Postal
+      Description=Outbound SMTP containment for the Postal test bench
       After=network-pre.target
       Before=docker.service
 
@@ -39,19 +39,19 @@
 
       [Install]
       WantedBy=multi-user.target
-  notify: Перечитать unit-файлы systemd
+  notify: Reload the systemd unit files
 
-- name: Применить отложенные обработчики
+- name: Apply the deferred handlers
   ansible.builtin.meta: flush_handlers
 
-- name: Включить mailguard
+- name: Enable mailguard
   ansible.builtin.systemd:
     name: mailguard
     state: started
     enabled: true
     daemon_reload: true
 
-- name: Проверить, что счётчик утечек существует
+- name: Check that the leak counter exists
   ansible.builtin.command:
     argv: [/usr/sbin/nft, list, counter, inet, mailguard, smtp_escape_attempts]
   changed_when: false

@@ -1,72 +1,85 @@
 ---
-# Полное развёртывание стенда с нуля.
+# Full deployment of the test bench from scratch.
 
-# Факты собираются со ВСЕХ хостов до любых компонентных плеев: адреса
-# зависимостей берутся из hostvars чужих хостов, а факты хоста, ни разу
-# не попавшего в плей, пусты.
-- name: Собрать факты со всех хостов
+# Facts are gathered from ALL hosts before any component plays: dependency
+# addresses are taken from the hostvars of other hosts, and the facts of a host
+# that has never appeared in a play are empty.
+- name: Gather facts from all hosts
   hosts: all
   gather_facts: true
   tasks: []
 
-- name: Подготовить хосты
+- name: Prepare hosts
   hosts: all
   become: true
   roles:
     - common
     - docker_host
 
-- name: Настроить изоляцию сети
+- name: Configure network containment
   hosts: postal_web:postal_smtp:postal_workers:postfix_sinks
   become: true
   roles:
     - containment
 
-- name: Развернуть внутренний DNS
+- name: Deploy internal DNS
   hosts: test_dns
   become: true
   roles:
     - test_dns
 
-- name: Развернуть MariaDB
+- name: Deploy MariaDB
   hosts: postal_main_db:postal_message_db
   become: true
   roles:
     - mariadb
 
-- name: Развернуть Postal
+- name: Deploy Postal
   hosts: postal_web:postal_smtp:postal_workers:postal_admin
   become: true
   roles:
     - postal_image
     - postal_app
 
-- name: Инициализировать схему Postal
+- name: Initialise the Postal schema
   hosts: postal_admin
   become: true
   roles:
     - postal_schema
 
-# Разворачивается после Postal: роль ждёт, пока все процессы приёма поднимутся
-# в бэкенде, а до их запуска это ожидание не имело бы смысла. Плей безвреден
-# при пустой группе — тогда генератор обращается к приёму напрямую.
-- name: Развернуть балансировщик HTTP API
+# Deployed after Postal: the role waits until all ingress processes come up
+# in the backend, and before they start that wait would make no sense. The play is harmless
+# with an empty group — the generator then talks to ingress directly.
+- name: Deploy the HTTP API load balancer
   hosts: postal_load_balancers
   become: true
   roles:
     - postal_lb
 
-- name: Развернуть приёмник
+- name: Deploy the sink
   hosts: postfix_sinks
   become: true
   roles:
     - postfix_sink
 
-- name: Развернуть генератор
+# Placed after the sink: the role does not merely assign the addresses, it proves each of
+# them can open TCP/25 to the sinks. An address assigned locally but unknown to the
+# provider's router answers ARP and routes nowhere, which silently removes the share of the
+# queue bound to it from processing. Verifying that before the sink exists is impossible.
+#
+# Assigning them this late is harmless: the worker re-enumerates its own addresses on every
+# job, and the pool rows are created by the seeding, which runs after this play.
+- name: Assign the outbound addresses of the IP pool
+  hosts: postal_workers
+  become: true
+  roles:
+    - postal_sending_ips
+
+- name: Deploy the load generator
   hosts: load_generators
   become: true
   roles:
     - loadgen
 
-- name: Засеять данные Postal
+- name: Seed Postal data
   ansible.builtin.import_playbook: seed.yml

@@ -1,7 +1,7 @@
 # {{ ansible_managed }}
 #
-# Балансировщик HTTP API. Работает в host-сети: он должен слушать svc_ip
-# и ходить к процессам приёма напрямую, а не через bridge с трансляцией адресов.
+# The HTTP API load balancer. It runs on the host network: it must listen on svc_ip
+# and reach the ingress processes directly, not through a bridge with address translation.
 
 name: stand-lb
 
@@ -19,8 +19,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-    # Драйвер логов и ротация не задаются здесь: роль docker_host выставляет
-    # их в daemon.json глобально, и контейнер наследует их сам.
+    # The log driver and rotation are not set here: the docker_host role sets
+    # them globally in daemon.json, and the container inherits them on its own.
     deploy:
       resources:
         limits:

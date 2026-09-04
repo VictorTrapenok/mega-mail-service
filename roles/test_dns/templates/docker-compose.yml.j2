@@ -6,11 +6,11 @@ services:
     image: {{ coredns_image_ref }}
     restart: unless-stopped
     command: ["-conf", "/etc/coredns/Corefile"]
-    # Host-сеть по той же причине, что и у приёмника: публикация порта
-    # означала бы DNAT, а к резолверу обращаются и контейнеры Postal
-    # в host-сети, и хостовые процессы. Адрес прослушивания задаётся
-    # директивой bind в Corefile — 0.0.0.0:53 занял бы порт,
-    # нужный systemd-resolved.
+    # Host networking for the same reason as on the sink: publishing a port
+    # would mean DNAT, and the resolver is queried both by Postal containers
+    # on the host network and by host processes. The listening address is set
+    # by the bind directive in the Corefile — 0.0.0.0:53 would take the port
+    # needed by systemd-resolved.
     network_mode: host
     volumes:
       - {{ test_dns_dir }}:/etc/coredns:ro

@@ -1,5 +1,5 @@
 ---
-- name: Пересобрать приёмник
+- name: Rebuild the sink
   community.docker.docker_compose_v2:
     project_src: "{{ postfix_sink_dir }}"
     build: always
@@ -7,7 +7,7 @@
     recreate: always
     wait: true
 
-- name: Перезапустить приёмник
+- name: Restart the sink
   community.docker.docker_compose_v2:
     project_src: "{{ postfix_sink_dir }}"
     state: restarted
