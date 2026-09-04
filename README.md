@@ -107,8 +107,37 @@ ansible-playbook -i inventories/distributed playbooks/build.yml
 ansible-playbook -i inventories/distributed playbooks/build.yml -e postal_build_force=true
 ```
 
-Details, including how to add an index as a migration and how to refresh the fork from
-upstream, are in [docs/custom-builds.md](docs/custom-builds.md).
+Postal's own test suite runs against the fork on demand. It needs Ruby 3.4.6, a MySQL
+server and Docker together, so it runs on a host that has them — never on the workstation:
+
+```bash
+# the whole suite
+ansible-playbook -i inventories/distributed playbooks/rspec.yml
+
+# one file, while iterating on a change
+ansible-playbook -i inventories/distributed playbooks/rspec.yml \
+  -e postal_specs_args=spec/models/queued_message_spec.rb
+
+# anything with a space must go as JSON: "-e key=value" splits on whitespace and would
+# deliver only the first token while looking like it worked
+ansible-playbook -i inventories/distributed playbooks/rspec.yml \
+  -e '{"postal_specs_args": "spec/models/queued_message_spec.rb --format documentation"}'
+```
+
+The `postal_specs` inventory group says where. It points at the auxiliary machine rather
+than the system under test: the image build is a two-core bundle install and has no business
+competing with a measurement.
+
+Every push builds the fork, runs Postal's test suite against it and — if the suite passes —
+publishes the image to the GitHub Container Registry as
+`ghcr.io/<owner>/<repo>/postal:src-<digest>`. That `src-` tag is the same string the report
+prints as "Source digest", which is what makes an image handed to a customer checkable
+rather than merely asserted. See
+[.github/workflows/postal-image.yml](.github/workflows/postal-image.yml).
+
+Details — how to add an index as a migration, how to hand the image over, how to refresh the
+fork from upstream — are in [docs/custom-builds.md](docs/custom-builds.md). What we have
+changed in the fork so far is in [docs/optimisations.md](docs/optimisations.md).
 
 Changing the target rate:
 

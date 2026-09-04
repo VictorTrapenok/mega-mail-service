@@ -15,6 +15,9 @@ rules:
   octal-values:
     forbid-implicit-octal: true
 
+# vendor/ holds the upstream Postal fork. It is someone else's code: linting it would
+# report on someone else's style, and every finding would be noise against the diff we own.
 ignore: |
   .github/
   reports/
+  vendor/

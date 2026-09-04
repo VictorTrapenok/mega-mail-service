@@ -217,6 +217,30 @@ RSpec.describe QueuedMessage do
           expect(queued_message.batchable_messages).to eq []
         end
       end
+
+      # An outgoing batch key is built as "outgoing-" plus the recipient domain, and the
+      # domain is written to its own indexed column from the same value. Both queries add a
+      # redundant predicate on that column so MySQL has an index to seek on instead of
+      # scanning the table; these examples pin the behaviour that predicate must preserve.
+      context "when the batch key is derived from the domain" do
+        let(:batch_key) { "outgoing-example.com" }
+
+        it "finds and locks messages sharing that batch key and domain" do
+          other_message = create(:queued_message, batch_key: batch_key, domain: "example.com", ip_address: nil)
+
+          messages = queued_message.batchable_messages
+          expect(messages).to eq [other_message]
+          expect(messages).to all be_locked
+        end
+
+        # The two columns are written together, so they can only disagree on a legacy or
+        # truncated row. Such a row is left out of the batch and delivered in a session of
+        # its own — it is never lost and never delivered twice.
+        it "does not find messages whose domain disagrees with the batch key" do
+          create(:queued_message, batch_key: batch_key, domain: "other.example", ip_address: nil)
+          expect(queued_message.batchable_messages).to eq []
+        end
+      end
     end
   end
 end

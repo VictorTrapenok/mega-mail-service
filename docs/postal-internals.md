@@ -110,6 +110,10 @@ domain accounts for at least a hundred queue rows; with a thousand domains that 
 queue of hundreds of thousands of rows. Until there is one, the query runs to the end of the
 table, and this happens for **every** claimed message.
 
+Our fork narrows this query without touching the schema — see
+[optimisations.md](optimisations.md). What is described here is upstream's behaviour,
+which is what the bench compares against.
+
 The consequence this suggests: the cost of processing a message should grow together
 with the queue length divided by the density of its `batch_key`.
 

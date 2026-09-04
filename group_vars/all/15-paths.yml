@@ -14,6 +14,9 @@ postal_config_dir: /opt/postal-bench/postal/config
 # unarchive replaces files but never removes them, so a file deleted from the fork would
 # otherwise survive here and go on being built in.
 postal_build_dir: /opt/postal-bench/build
+# Source tree for the rspec suite. Separate from the build context above so running the
+# suite on a host cannot disturb an image build on the same host.
+postal_specs_dir: /opt/postal-bench/specs
 
 # --- MariaDB --------------------------------------------------------------
 mariadb_dir: /opt/postal-bench/mariadb

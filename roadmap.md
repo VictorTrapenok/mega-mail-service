@@ -38,6 +38,31 @@ corresponds to priority.
   the generator running the target profile into a knowingly fast sink, refusing to
   start a run if the generator itself cannot sustain the target with twofold headroom.
 
+### Our own build
+
+- **Measuring the batch-collection patch.** `batchable_messages` now filters on the indexed
+  `domain` column (`docs/optimisations.md`). Nothing about it has been measured, and it
+  cannot be until the two arms below exist. Until then it is a hypothesis in the tree.
+- **An arm with many outbound addresses.** `postal_sending_ips` assigns six. The regime the
+  customer runs is a /24, and it is the address count that decides whether batch collection
+  can ever reach its `LIMIT 100` — at 254 addresses it cannot, which is what turns the query
+  into a full table scan per message. Reproducing it needs N addresses generated onto a
+  dummy interface, still proved with a real `MAIL FROM`, plus the matching `ip_addresses`
+  rows and DNS names.
+- **A composite index on `queued_messages` led by `ip_address_id`.** The proper fix for the
+  head domains, deliberately deferred: a schema change is exactly what cannot be tried
+  cheaply on a live installation, so it comes after the no-schema patch has been measured.
+- **Running the suite without a server.** `playbooks/rspec.yml` closes the CI round trip for
+  anyone with a test host, but the suite still cannot run on a workstation: it needs Ruby
+  3.4.6, a MySQL server and Docker at once. A devcontainer would close that too. Lower
+  priority now that a one-line patch can be checked in a few minutes against a test host.
+- **Signing the published image.** The handover currently rests on a label, which proves
+  which source an image was built from but not who built it. cosign or GitHub attestations
+  if provenance ever has to survive an argument.
+- **Verifying the query plan as part of a run.** The domain predicate is worth nothing if the
+  optimiser ignores it. The report should carry the `EXPLAIN` of both hot worker queries read
+  from the running database, so an inert patch is visible rather than silently averaged in.
+
 ### Credibility
 
 - **Provider tiers on the sink.** The per-IP limits are now uniform: every destination

@@ -79,9 +79,15 @@ build with an older schema requires a state reset, not just redeploying the old 
 ## How the build is identified
 
 The image is tagged `postal-bench/postal:src-<first 12 hex of the source digest>`, where the
-digest is a SHA-256 over a deterministic archive of `vendor/postal/` — names sorted,
-mtime, owner and pax time headers zeroed. Touching a file does not change it; editing one
-does.
+digest is a SHA-256 over a deterministic archive of `vendor/postal/` — names sorted, mtime,
+owner and pax time headers zeroed, and **file modes normalised with `--mode=go-w`**.
+Touching a file does not change it; editing one does.
+
+The mode normalisation is not cosmetic. Git records only the executable bit, so everything
+else in a file's mode comes from the umask of whoever checked the tree out: a workstation at
+umask 002 produces 664/775 and a CI runner at 022 produces 644/755. Without normalising,
+the same source hashed `df0f3784e8ed` locally and `52733cbabb11` in CI — and the whole
+point of the digest is that those two are the same string.
 
 This buys two things. A hand-maintained tag lies as soon as somebody forgets to bump it,
 and the entire point of this path is to run edited code — a content digest cannot forget.
@@ -104,6 +110,85 @@ in two places, both off the **running container** rather than off the image or t
 A tag says what someone meant to deploy. A label on a running container says what ran. The
 gap between the two is exactly a compose file that did not change, a container that was not
 recreated, or a stale tag — all of which produce a run that looks completely normal.
+
+## Running the test suite
+
+```bash
+ansible-playbook -i inventories/distributed playbooks/rspec.yml
+ansible-playbook -i inventories/distributed playbooks/rspec.yml \
+  -e postal_specs_args=spec/models/queued_message_spec.rb
+```
+
+The `postal_specs` role ships the same deterministic archive the image build uses, builds the
+`ci` target on the target host and runs the suite against a throw-away MariaDB from Postal's
+own compose file, then tears it down. Because the archive is the same, the suite result and a
+benchmark result carry the same source digest and can be attributed to one identical tree
+rather than to two builds that were probably the same.
+
+Where it runs is the `postal_specs` inventory group, and in the measurement inventory that is
+the auxiliary machine, not the system under test — a two-core bundle install has no business
+competing with a measurement, and on the SUT it would also be squeezed by the memory the
+Postal stack already holds.
+
+It deploys nothing, touches neither the Postal stack nor its database, and publishes nothing.
+
+## CI: the test suite and the image for handover
+
+[.github/workflows/postal-image.yml](../.github/workflows/postal-image.yml) runs on every
+push, in three jobs:
+
+1. **identity** — computes the source digest with the same tar recipe the Ansible role uses,
+   and reads the fork's provenance out of `group_vars/all/20-images.yml` so there is one
+   source of truth for it. Both land in the run summary.
+2. **test** — builds the `ci` target and runs `bundle exec rspec` against a throw-away
+   MariaDB, using Postal's own [docker-compose.yml](../vendor/postal/docker-compose.yml).
+   The same three steps `playbooks/rspec.yml` performs above; the difference is only where
+   the Docker daemon lives.
+3. **publish** — builds the `full` target and pushes to the GitHub Container Registry.
+   Gated on **test**: an image nobody has run the suite against is not something to put in
+   front of a customer.
+
+Tags on `ghcr.io/<owner>/<repo>/postal`:
+
+| Tag | Means |
+|---|---|
+| `src-<12 hex>` | The code. Same source always, different source never. **This is the tag to hand over.** |
+| `sha-<12 hex>` | The commit of this repository that produced it |
+| `latest` | Default branch only |
+| `v*` | Carried through from a git tag |
+
+The image also carries `bench.source.sha256` as a label, so `build.yml` and the run report
+verify a pulled image exactly as they verify a locally built one.
+
+### Handing the image to the customer
+
+```bash
+docker pull ghcr.io/<owner>/<repo>/postal:src-52733cbabb11
+docker inspect --format '{{index .Config.Labels "bench.source.sha256"}}' \
+  ghcr.io/<owner>/<repo>/postal:src-52733cbabb11
+```
+
+The point of quoting the `src-` tag rather than `latest` is that it is the same string the
+report prints as "Source digest". "This image is the build that produced that report" then
+becomes something the customer can check instead of something they have to take on trust.
+
+Two things to do once, before the first handover:
+
+- **The GHCR package is private by default.** Make it public, or grant the customer read
+  access, under the repository's *Packages* settings. Until then a `docker pull` from
+  outside will fail with a 403 that reads like the image does not exist.
+- **Nothing here signs the image.** If the handover needs provenance beyond a label,
+  that is cosign or GitHub attestations, and neither is set up.
+
+To point the bench at a published image instead of building locally, deploy it as an
+upstream reference:
+
+```bash
+ansible-playbook -i inventories/distributed playbooks/benchmark.yml \
+  -e postal_image_source=upstream \
+  -e postal_image_repo=ghcr.io/<owner>/<repo>/postal \
+  -e postal_image_ref=src-52733cbabb11
+```
 
 ## Updating the fork from upstream
 

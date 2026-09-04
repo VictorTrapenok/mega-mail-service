@@ -1,0 +1,186 @@
+---
+# Building our Postal fork on every commit that touches it, running its test suite, and
+# publishing the image to the GitHub Container Registry so it can be handed to the customer.
+#
+# The image is tagged by the SAME content digest the bench computes locally
+# (roles/postal_image/tasks/local.yml). That is what makes a handover verifiable: the tag
+# on the published image and the "Source digest" line in a run report are the same string,
+# so the customer can be told "this image is the build that produced that report" and it can
+# be checked rather than asserted. The tar recipe below is duplicated from the role on
+# purpose and the two must not drift — the mode normalisation in particular, without which
+# a workstation at umask 002 and a runner at umask 022 hash the same source differently.
+#
+# Publishing is gated on the test suite. An image nobody has tested is not something to put
+# in front of a customer, and the bench does not need this workflow — it builds locally.
+
+name: postal-image
+
+# Every push, as asked. There is deliberately no paths filter: the image tag is derived
+# from the source, so a commit that does not touch vendor/postal republishes the identical
+# image under a new sha- tag and the layer cache makes that nearly free. Add
+#   paths: ["vendor/postal/**", "group_vars/all/20-images.yml", ".github/workflows/postal-image.yml"]
+# to save runner minutes — but note that GitHub does not evaluate path filters reliably for
+# tag pushes, so a release build would then need the manual trigger.
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  identity:
+    name: Source identity
+    runs-on: ubuntu-24.04
+    outputs:
+      digest: ${{ steps.id.outputs.digest }}
+      short: ${{ steps.id.outputs.short }}
+      image: ${{ steps.id.outputs.image }}
+      upstream_ref: ${{ steps.id.outputs.upstream_ref }}
+      upstream_commit: ${{ steps.id.outputs.upstream_commit }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute the source digest and the image name
+        id: id
+        run: |
+          set -euo pipefail
+
+          DIGEST=$(tar --sort=name --format=posix \
+            --pax-option='exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime,delete=mtime' \
+            --mtime='@0' --owner=0 --group=0 --numeric-owner --mode='go-w' \
+            -cf - -C vendor postal | sha256sum | cut -c1-64)
+
+          # The provenance of the fork has one source of truth, and it is not this file.
+          UPSTREAM_REF=$(grep -oP '^postal_build_upstream_ref:\s*"\K[^"]+' group_vars/all/20-images.yml)
+          UPSTREAM_COMMIT=$(grep -oP '^postal_build_upstream_commit:\s*"\K[^"]+' group_vars/all/20-images.yml)
+
+          # GHCR rejects uppercase in a repository name and GitHub owners may contain it.
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}/postal"
+
+          {
+            echo "digest=${DIGEST}"
+            echo "short=${DIGEST:0:12}"
+            echo "image=${IMAGE}"
+            echo "upstream_ref=${UPSTREAM_REF}"
+            echo "upstream_commit=${UPSTREAM_COMMIT}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "### Postal build \`src-${DIGEST:0:12}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- source digest: \`${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- fork of upstream \`${UPSTREAM_REF}\` (\`${UPSTREAM_COMMIT}\`)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- image: \`${IMAGE}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  test:
+    name: Test suite
+    runs-on: ubuntu-24.04
+    needs: identity
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The ci target skips asset precompilation, which the suite does not need and which is
+      # the slowest layer. It must never be published — production.rb sets
+      # config.assets.compile = false, so a ci image serves 500 on every page while a TCP
+      # health check still calls it alive.
+      - name: Build the test image
+        uses: docker/build-push-action@v6
+        with:
+          context: vendor/postal
+          target: ci
+          push: false
+          load: true
+          tags: postal-bench/postal:ci-${{ needs.identity.outputs.short }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      # Postal's own compose file for the suite: the app against a throw-away MariaDB.
+      - name: Run rspec
+        working-directory: vendor/postal
+        env:
+          POSTAL_IMAGE: postal-bench/postal:ci-${{ needs.identity.outputs.short }}
+        run: docker compose run --rm postal sh -c 'bundle exec rspec'
+
+      - name: Stop the test stack
+        if: always()
+        working-directory: vendor/postal
+        env:
+          POSTAL_IMAGE: postal-bench/postal:ci-${{ needs.identity.outputs.short }}
+        run: docker compose down --volumes
+
+  publish:
+    name: Publish to GHCR
+    runs-on: ubuntu-24.04
+    needs: [identity, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # src-<digest> is the tag to hand over: it names the code and nothing else, so the
+      # same source always resolves to the same tag and a different source never can.
+      # sha-<commit> answers "which commit of the bench repo", latest is a convenience for
+      # the default branch only, and a v* git tag is carried through for releases.
+      - name: Assemble the tag list
+        id: tags
+        run: |
+          set -euo pipefail
+          IMAGE="${{ needs.identity.outputs.image }}"
+          {
+            echo 'list<<EOF'
+            echo "${IMAGE}:src-${{ needs.identity.outputs.short }}"
+            echo "${IMAGE}:sha-${GITHUB_SHA::12}"
+            if [ "${GITHUB_REF}" = "refs/heads/${{ github.event.repository.default_branch }}" ]; then
+              echo "${IMAGE}:latest"
+            fi
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              echo "${IMAGE}:${GITHUB_REF_NAME}"
+            fi
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: vendor/postal
+          target: full
+          push: true
+          tags: ${{ steps.tags.outputs.list }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+          build-args: |
+            VERSION=${{ needs.identity.outputs.upstream_ref }}
+            BRANCH=bench-${{ needs.identity.outputs.short }}
+          # bench.source.sha256 is the same label the local build bakes in, and it is what
+          # both build.yml and the run report read off the RUNNING container. Without it an
+          # image published here could not prove which source it came from.
+          labels: |
+            bench.source.sha256=${{ needs.identity.outputs.digest }}
+            bench.upstream.ref=${{ needs.identity.outputs.upstream_ref }}
+            bench.upstream.commit=${{ needs.identity.outputs.upstream_commit }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=Postal ${{ needs.identity.outputs.upstream_ref }} fork, source ${{ needs.identity.outputs.short }}
+
+      - name: Say what was published
+        run: |
+          {
+            echo "### Published"
+            echo ""
+            echo '```'
+            echo "${{ steps.tags.outputs.list }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

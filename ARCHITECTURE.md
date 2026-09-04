@@ -11,6 +11,7 @@ there are only links and general principles.
 | [POSTAL_OPTIMIZATION_GUIDE.md](POSTAL_OPTIMIZATION_GUIDE.md) | Measurement methodology and the optimisation sequence |
 | [docs/postal-internals.md](docs/postal-internals.md) | Confirmed Postal 3.3.7 internals with paths into the sources |
 | [docs/custom-builds.md](docs/custom-builds.md) | The Postal fork in `vendor/postal/`, how it is built and how a run proves which build it measured |
+| [docs/optimisations.md](docs/optimisations.md) | The patch log for the fork: what each change does, why it is safe, and whether it has been measured |
 | [README.md](README.md) | Commands for running things |
 | [roadmap.md](roadmap.md) | What has been deferred and why |
 
@@ -39,6 +40,9 @@ The roles are grouped by purpose:
   `postal_seed`.
 - **Measurement environment** — `postfix_sink`, `loadgen`, `bench_samplers`,
   `bench_report`, `bench_reset`.
+- **Checking our own build** — `postal_specs` (Postal's rspec suite against the fork, on a
+  host with Docker; the `postal_specs` inventory group deliberately points away from the
+  system under test).
 - **Measurements** — `bench_run` (ingress and draining together), `bench_ingress` (ingress
   only), `bench_prefill` + `bench_drain` (draining only), `bench_workers`
   (moving the workers to the required state).

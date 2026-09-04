@@ -1,0 +1,16 @@
+---
+# Which examples to run. Empty means the whole suite; a path or a filter narrows it, which is
+# what makes the loop usable while iterating on one change.
+#
+# Anything containing a SPACE has to be passed as JSON. "-e key=value" is parsed by
+# Ansible's parse_kv, which splits on whitespace, so
+#   -e postal_specs_args="spec/models/x_spec.rb --format documentation"
+# silently delivers only the path and drops the rest — the run looks fine and quietly
+# ignores half of what was asked. Use:
+#   -e '{"postal_specs_args": "spec/models/x_spec.rb --format documentation"}'
+postal_specs_args: ""
+
+# Refuse to start below this much free space under /var/lib/docker. The ci image, its build
+# layers and a MariaDB come to several gigabytes, and running out mid-build produces an error
+# that names no cause.
+postal_specs_min_free_mb: 5000

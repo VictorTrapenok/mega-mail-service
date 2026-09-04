@@ -2,6 +2,47 @@
 
 ## 2026-09-04
 
+### Running the test suite
+
+- Role `postal_specs` and `playbooks/rspec.yml`: build the `ci` target on a host that has
+  Docker and run Postal's rspec suite against a throw-away MariaDB, then tear it down. It
+  ships the same deterministic archive the image build uses, so a suite result and a
+  benchmark result carry the same source digest.
+- Result of the first run: **812 examples, 0 failures** on source `52733cbabb11`, and both
+  new examples confirmed to run by name rather than inferred from the total. The batch-key
+  patch is correct; nothing about its speed has been measured.
+- New `postal_specs` inventory group in both inventories. In the measurement inventory it
+  points at `aux`, not the system under test: the build is a two-core bundle install, and on
+  `sut` it would compete with a measurement and be squeezed by the memory the Postal stack
+  already holds (measured: 597 MB available on sut against 3198 on aux).
+
+### CI and image handover
+
+- `.github/workflows/postal-image.yml`: every push computes the source digest, runs Postal's
+  rspec suite against a `ci` build, and on success pushes the `full` image to GHCR as
+  `ghcr.io/<owner>/<repo>/postal` tagged `src-<digest>`, `sha-<commit>`, `latest` on the
+  default branch and `v*` from git tags. Publishing is gated on the suite.
+- The digest recipe gained `--mode=go-w`. Git records only the executable bit, so the rest
+  of a file's mode came from the checkout umask: the same source hashed `df0f3784e8ed` on a
+  workstation (002) and `52733cbabb11` on a runner (022). Without this the tag CI publishes
+  could not be shown to be the build the bench measured.
+- `vendor/` excluded from yamllint and ansible-lint — the fork is a Rails application and
+  every finding in it would be noise against the diff we own.
+
+### First optimisation in the fork
+
+- `QueuedMessage#batchable_messages` now also filters on the indexed `domain` column. For an
+  outgoing message `batch_key` is `"outgoing-" + domain` and both columns are written from
+  the same value, so the predicate changes no result — it gives MySQL
+  `index_queued_messages_on_domain` to seek on instead of scanning the table by primary key
+  once per delivered message. **No schema change**, so it can be deployed and rolled back on
+  a live installation by swapping the image.
+- Two specs added for the new path; the existing upstream specs use a batch key that does not
+  satisfy the invariant, so they exercise the unchanged path unmodified.
+- `docs/optimisations.md`: the patch log for the fork. This change is recorded as a
+  hypothesis — it has not been measured, and the bench cannot yet reach the regime where it
+  would show (a queue of 10^5+ rows, a pool of many addresses).
+
 ### Our own build of Postal
 
 - Postal 3.3.7 forked into `vendor/postal/` (upstream commit `d038eaa`), edited in this

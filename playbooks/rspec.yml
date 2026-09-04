@@ -1,0 +1,29 @@
+---
+# Running Postal's test suite against the fork in vendor/postal.
+#
+# Docker work belongs on a host that has Docker — a test server or CI — not on a workstation,
+# so this playbook needs a target with a Docker daemon and does all the building there.
+#
+#   ansible-playbook -i inventories/distributed playbooks/rspec.yml
+#   ansible-playbook -i inventories/distributed playbooks/rspec.yml \
+#     -e postal_specs_args=spec/models/queued_message_spec.rb
+#
+# Arguments containing a space must go as JSON — "-e key=value" splits on whitespace and
+# would deliver only the first token while looking like it worked:
+#
+#   ansible-playbook -i inventories/distributed playbooks/rspec.yml \
+#     -e '{"postal_specs_args": "spec/models/queued_message_spec.rb --format documentation"}'
+#
+# It is independent of the bench: it deploys nothing, touches neither the Postal stack nor
+# its database, and publishes nothing. Safe to run while a stand is up, though not while a
+# measured run is in flight — the build competes for the same cores.
+
+- name: Run the Postal test suite
+  hosts: postal_specs
+  become: true
+  gather_facts: false
+  # One host is enough, and the suite is not a measurement: running it on every Postal host
+  # would only repeat the same answer at the price of another image build each.
+  run_once: true
+  roles:
+    - postal_specs

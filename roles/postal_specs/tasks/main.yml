@@ -1,0 +1,179 @@
+---
+# Running Postal's own rspec suite against the fork, on a host that has Docker.
+#
+# It exists because the suite needs Ruby 3.4.6, a MySQL server and Docker at once, which a
+# workstation generally does not have — and because a change to the fork should be checkable
+# without a CI round trip. The same three steps CI performs: build the `ci` target, run the
+# suite against a throw-away MariaDB from Postal's own compose file, tear it down.
+#
+# The source is shipped with the SAME deterministic archive the image build uses, so the tag
+# here carries the same source digest. A suite result and a benchmark result can therefore be
+# attributed to one identical tree rather than to two builds that were probably the same.
+
+- name: Make sure the fork has been vendored
+  ansible.builtin.stat:
+    path: "{{ postal_build_source_dir }}/Dockerfile"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: postal_specs_dockerfile
+
+- name: Fail when there is nothing to test
+  ansible.builtin.assert:
+    that:
+      - postal_specs_dockerfile.stat.exists
+    fail_msg: >-
+      {{ postal_build_source_dir }}/Dockerfile is missing, so there is no source to test.
+      See docs/custom-builds.md.
+
+# The ci image plus its build layers and a MariaDB come to several gigabytes. Out of space,
+# `docker build` fails deep inside a bundle install with an error that names no cause.
+- name: Check there is room for the image
+  ansible.builtin.shell:
+    cmd: set -o pipefail; df -Pk /var/lib/docker | awk 'NR==2 {print $4}'
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: postal_specs_space
+
+- name: Fail early when the disk is too small
+  ansible.builtin.assert:
+    that:
+      - (postal_specs_space.stdout | trim | int) > (postal_specs_min_free_mb | int) * 1024
+    fail_msg: >-
+      Only {{ ((postal_specs_space.stdout | trim | int) / 1024) | round | int }} MB free under
+      /var/lib/docker, and the build needs about {{ postal_specs_min_free_mb }} MB. Free space
+      or run "docker system prune -af" on {{ inventory_hostname }}.
+
+- name: Create a temporary file for the source archive
+  ansible.builtin.tempfile:
+    state: file
+    suffix: .tar
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: postal_specs_archive
+
+# Identical to the recipe in postal_image/tasks/local.yml, including the mode normalisation.
+# The point is that both produce the same digest for the same tree.
+- name: Pack the source deterministically
+  ansible.builtin.shell:
+    cmd: >-
+      tar --sort=name --format=posix
+      --pax-option='exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime,delete=mtime'
+      --mtime='@0' --owner=0 --group=0 --numeric-owner --mode='go-w'
+      -cf {{ postal_specs_archive.path | quote }}
+      -C {{ postal_build_source_dir | dirname | quote }}
+      {{ postal_build_source_dir | basename | quote }}
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Compute the content digest of the source
+  ansible.builtin.stat:
+    path: "{{ postal_specs_archive.path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: postal_specs_archive_stat
+
+- name: Pin the identity of the tree under test
+  ansible.builtin.set_fact:
+    postal_specs_source_digest: "{{ postal_specs_archive_stat.stat.checksum }}"
+    postal_specs_image: >-
+      {{ postal_build_image_repo }}:ci-{{ postal_specs_archive_stat.stat.checksum[:12] }}
+
+# Wiped rather than overwritten: unarchive adds and replaces but never removes, so a file
+# deleted from the fork would survive here and go on being tested.
+- name: Reset the source directory
+  ansible.builtin.file:
+    path: "{{ postal_specs_dir }}"
+    state: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [absent, directory]
+
+- name: Unpack the source
+  ansible.builtin.unarchive:
+    src: "{{ postal_specs_archive.path }}"
+    dest: "{{ postal_specs_dir }}"
+    owner: root
+    group: root
+
+- name: Remove the temporary source archive
+  ansible.builtin.file:
+    path: "{{ postal_specs_archive.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+# The ci target skips asset precompilation, which the suite does not need and which is the
+# slowest layer. It must never be deployed: production.rb sets config.assets.compile = false,
+# so a ci image serves 500 on every page while a TCP health check still calls it alive.
+- name: Build the test image
+  ansible.builtin.command:
+    argv:
+      - docker
+      - build
+      - "--target"
+      - ci
+      - "--pull={{ postal_build_pull | lower }}"
+      - "--tag"
+      - "{{ postal_specs_image }}"
+      - "{{ postal_specs_dir }}/{{ postal_build_source_dir | basename }}"
+  changed_when: true
+
+# Postal's own compose file for the suite: the app against a throw-away MariaDB, nothing
+# published, so it cannot collide with a bench stack on the same host. The image entrypoint
+# is wait-for, which blocks until MariaDB answers before handing over to rspec.
+- name: Run the suite
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - run
+      - "--rm"
+      - postal
+      - sh
+      - "-c"
+      - "bundle exec rspec {{ postal_specs_args }}"
+    chdir: "{{ postal_specs_dir }}/{{ postal_build_source_dir | basename }}"
+  environment:
+    POSTAL_IMAGE: "{{ postal_specs_image }}"
+  register: postal_specs_run
+  changed_when: false
+  failed_when: false
+
+# Torn down before the verdict so a red suite does not leave a MariaDB and a network behind
+# on the host until somebody remembers them.
+- name: Tear the test stack down
+  ansible.builtin.command:
+    argv: [docker, compose, down, "--volumes", "--remove-orphans"]
+    chdir: "{{ postal_specs_dir }}/{{ postal_build_source_dir | basename }}"
+  environment:
+    POSTAL_IMAGE: "{{ postal_specs_image }}"
+  changed_when: true
+
+# stdout and stderr both carry part of the picture: rspec writes its progress and summary to
+# stdout while compose writes container startup and any crash to stderr, and a suite that
+# died before rspec started leaves nothing in stdout at all.
+- name: Show the suite output
+  ansible.builtin.debug:
+    msg: "{{ (postal_specs_run.stdout_lines | default([])) + (postal_specs_run.stderr_lines | default([])) }}"
+
+- name: Fail when the suite did not pass
+  ansible.builtin.assert:
+    that:
+      - postal_specs_run.rc == 0
+    fail_msg: >-
+      rspec exited {{ postal_specs_run.rc }} on source
+      {{ postal_specs_source_digest[:12] }}. The output is in the task above.
+    success_msg: >-
+      rspec passed on source {{ postal_specs_source_digest[:12] }}
+      ({{ postal_specs_image }}).

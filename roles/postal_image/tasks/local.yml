@@ -46,12 +46,22 @@
 # --sort=name and the zeroed metadata are what make the digest a function of the CONTENT.
 # Without them a fresh checkout, or merely an editor saving a file, would produce a new
 # digest, a new tag and a full rebuild before every run.
+#
+# --mode='go-w' normalises the file modes, and it is not cosmetic. Git records only the
+# executable bit, so the rest of the mode comes from the checkout umask: a workstation at
+# 002 produces 664/775 and a CI runner at 022 produces 644/755. Without this the same
+# source hashes differently on the two, and the image CI publishes could not be shown to be
+# the image the bench measured. Measured before adding it: df0f3784e8ed here against
+# 52733cbabb11 for an identical tree with CI's modes.
+#
+# The recipe is duplicated in .github/workflows/postal-image.yml and the two must stay
+# identical — that is the whole point of it.
 - name: Pack the source deterministically
   ansible.builtin.shell:
     cmd: >-
       tar --sort=name --format=posix
       --pax-option='exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime,delete=mtime'
-      --mtime='@0' --owner=0 --group=0 --numeric-owner
+      --mtime='@0' --owner=0 --group=0 --numeric-owner --mode='go-w'
       -cf {{ postal_build_archive.path | quote }}
       -C {{ postal_build_source_dir | dirname | quote }}
       {{ postal_build_source_dir | basename | quote }}

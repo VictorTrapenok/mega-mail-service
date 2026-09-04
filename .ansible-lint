@@ -5,6 +5,8 @@ exclude_paths:
   - .github/
   - reports/
   - .ansible_facts/
+  # The vendored Postal fork. Its YAML is a Rails application's, not Ansible's.
+  - vendor/
 
 skip_list:
   # Test-bench roles are only ever launched by their own playbooks, so they
