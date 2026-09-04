@@ -9,17 +9,6 @@
 # must sit between their readiness and the first processed row, otherwise the Ruby startup
 # ends up inside the measured time.
 
-- name: Read the sink delivery counter before the drain
-  ansible.builtin.shell:
-    cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
-  args:
-    executable: /bin/bash
-  delegate_to: "{{ item }}"
-  loop: "{{ groups['postfix_sinks'] }}"
-  run_once: true
-  changed_when: false
-  register: drain_sink_before
-
 - name: Start the workers
   ansible.builtin.include_role:
     name: bench_workers
@@ -33,6 +22,41 @@
   run_once: true
   changed_when: false
   register: drain_clock_start
+
+# Every counter is read AFTER the clock, not before the workers start. The workers deliver
+# while the health check is still failing, and reading the sink here but the clock there put
+# those deliveries inside the sink delta and outside every window the database is asked
+# about. It showed up as more recipients delivered than attempts made — 232 against 190 —
+# which is impossible and was the only reason the discrepancy was noticed at all. The startup
+# deliveries are now excluded from both sides instead of one.
+- name: Read the sink delivery counter before the drain
+  ansible.builtin.shell:
+    cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: drain_sink_before
+
+# The receiver's own record of every time it refused. Counted independently of Postal for the
+# same reason delivery is: it is the only source that does not depend on the object being
+# measured. The four warning strings were read out of the smtpd binary rather than guessed —
+# the reply text says "too much mail" where one would write "too many messages", and a grep
+# for the plausible wording counts zero forever without ever looking broken.
+- name: Read the sink throttling counter before the drain
+  ansible.builtin.shell:
+    cmd: >-
+      grep -cE '(Connection concurrency|Connection rate|Message delivery request|Recipient address)[a-z ]*limit exceeded:'
+      {{ postfix_sink_log }} || true
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: drain_throttle_before
 
 # The denominator is the ready rows, not all of them. The worker will not take deferred ones
 # until retry_after expires, so including them in the drain rate would mean
@@ -57,6 +81,12 @@
 # We wait for the READY rows to run out rather than for the table to empty: with a non-empty
 # deferred share the table will not empty until retry_after expires, and a condition
 # on COUNT(*) would never be satisfied, turning the result into a timeout.
+#
+# Under a binding per-IP cap even this condition changes meaning: a refused row returns to the
+# queue with retry_after five minutes out, so "no ready rows" comes to mean "everything is
+# either delivered or deferred". The loop still terminates, but the rate computed from it
+# divides by a starting row count that includes rows which were never going to be delivered.
+# That is what window mode exists for — see bench_drain_mode.
 - name: Wait for the ready rows to run out
   community.mysql.mysql_query:
     login_host: "{{ postal_main_db_addr }}"
@@ -79,6 +109,36 @@
   changed_when: false
   run_once: true
   delegate_to: "{{ groups['postal_main_db'] | first }}"
+  when: bench_drain_mode == 'exhaust'
+
+# In window mode the length of the observation is the parameter, not the outcome. The queue
+# is deliberately not waited on: a throttled sink keeps returning rows to it, and the number
+# being sought is how much got through per second while the cap was binding.
+- name: Observe for the fixed window
+  ansible.builtin.wait_for:
+    timeout: "{{ bench_drain_window_s | int }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: bench_drain_mode == 'window'
+
+- name: Measure the ready rows at the end of the window
+  community.mysql.mysql_query:
+    login_host: "{{ postal_main_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_main_db_name }}"
+    query: >-
+      SELECT COUNT(*) AS n FROM queued_messages
+       WHERE locked_at IS NULL
+         AND (retry_after IS NULL
+              OR retry_after < UTC_TIMESTAMP() - INTERVAL 30 SECOND)
+  register: drain_window_check
+  changed_when: false
+  run_once: true
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  when: bench_drain_mode == 'window'
 
 - name: Record the end of the drain
   ansible.builtin.command:
@@ -98,6 +158,170 @@
   run_once: true
   changed_when: false
   register: drain_sink_after
+
+- name: Read the sink throttling counter after the drain
+  ansible.builtin.shell:
+    cmd: >-
+      grep -cE '(Connection concurrency|Connection rate|Message delivery request|Recipient address)[a-z ]*limit exceeded:'
+      {{ postfix_sink_log }} || true
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: drain_throttle_after
+
+# Which source address each refusal was aimed at. The warning line carries the client address
+# in a fixed position, so this is the one per-IP figure that does not depend on Postal's own
+# records. It is read over the whole file: reset.yml truncates the sink log before every run,
+# and a line offset into it does not survive a redeployment of the sink.
+# Which limit was hit. This has to come from the log, not from the reply Postal stored: smtpd
+# answers "421 ... too many connections" for BOTH the concurrency cap and the connection RATE
+# cap, so the reply cannot tell the two apart and a breakdown built from it silently files
+# every rate rejection under concurrency. The log warning names the limit outright.
+- name: Break the throttling down by the limit that was hit
+  ansible.builtin.shell:
+    cmd: >-
+      grep -oE '(Connection concurrency|Connection rate|Message delivery request|Recipient address)[a-z ]*limit exceeded:'
+      {{ postfix_sink_log }}
+      | sed -E 's/ ?limit exceeded://' | sort | uniq -c
+      | awk '{n=$1; $1=""; sub(/^ /,""); gsub(/ /,"_"); print $0"="n}' | paste -sd, - || true
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: drain_throttle_by_reason
+
+- name: Break the throttling down by source address
+  ansible.builtin.shell:
+    cmd: >-
+      grep -oE '[A-Za-z ]+limit exceeded: [0-9]+ from [^ ]+' {{ postfix_sink_log }}
+      | sed -E 's/.* from //; s/^.*\[//; s/\]$//' | sort | uniq -c
+      | awk '{print $2"="$1}' | paste -sd, - || true
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: drain_throttle_by_ip
+
+# The duplicate detector. A recipient the sink accepted twice would inflate delivery without
+# inflating goodput, and identical worker hostnames make workers pick up each other's batches.
+#
+# BOTH sides are counted over the whole file, and they have to be: the delivered figure used
+# for the rate is a delta across the measured window, while distinct recipients cannot be
+# counted as a delta at all. Comparing the two would report the deliveries made while the
+# workers were still starting as duplicates. reset.yml truncates the sink log before every
+# run, so the whole file is this run.
+- name: Count the distinct recipients the sink accepted
+  ansible.builtin.shell:
+    cmd: >-
+      grep -oE 'to=<[^>]+>' {{ postfix_sink_log }} | sort -u | wc -l
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: drain_unique_recipients
+
+- name: Count everything the sink accepted over the whole run
+  ansible.builtin.shell:
+    cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: drain_sink_total
+
+# Every delivery attempt writes one row here, whatever its outcome, so this single query gives
+# both halves of retry amplification: how much work Postal did, and how much of it landed.
+# Without the split, a throttled run reports the attempt rate as if it were throughput.
+- name: Count delivery attempts by outcome
+  community.mysql.mysql_query:
+    login_host: "{{ postal_message_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_seed.message_db_name }}"
+    query: >-
+      SELECT status, COUNT(*) AS n
+        FROM deliveries
+       WHERE timestamp >= {{ drain_clock_start.stdout | trim | int }}
+       GROUP BY status
+       ORDER BY status
+  register: drain_attempts_raw
+  changed_when: false
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+
+# Temporary failures the caps do NOT explain. The reason breakdown above says which limit was
+# hit; this says whether anything else was going wrong at the same time — a resolver timeout,
+# a dropped connection, an internal error. A non-zero count here is the signal that the run
+# measured something besides throttling, and it would otherwise hide inside the SoftFail total.
+- name: Count temporary rejections the caps do not explain
+  community.mysql.mysql_query:
+    login_host: "{{ postal_message_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_seed.message_db_name }}"
+    query: >-
+      SELECT COUNT(*) AS n
+        FROM deliveries
+       WHERE status = 'SoftFail'
+         AND timestamp >= {{ drain_clock_start.stdout | trim | int }}
+         AND COALESCE(output, '') NOT LIKE '%too many connections%'
+         AND COALESCE(output, '') NOT LIKE '%too much mail%'
+         AND COALESCE(output, '') NOT LIKE '%too many recipients%' 
+  register: drain_softfail_raw
+  changed_when: false
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
+
+# Time to delivery, not time to acceptance. The generator's postal_accept_latency measures the
+# HTTP call and says nothing about when the recipient got the mail; under throttling the two
+# diverge by the length of the retry ladder, and it is the second number the customer's
+# customers experience. Both timestamps are Postal's own, so the row count is cross-checked
+# against the sink log rather than trusted on its own.
+#
+# The percentiles are computed in a subquery and only then aggregated. Putting COUNT(*)
+# alongside the window functions in one SELECT does not do what it looks like: the aggregate
+# collapses the whole set to a single row FIRST, and the window functions then run over that
+# one row, so all three percentiles come out identical. They did — p50, p95 and p99 all read
+# 26.6 s against a real spread of 13.8 to 29.9 s, which is exactly the shape of a plausible
+# wrong answer.
+- name: Measure time to delivery
+  community.mysql.mysql_query:
+    login_host: "{{ postal_message_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_seed.message_db_name }}"
+    query: >-
+      SELECT COUNT(*) AS n,
+             MAX(p50) AS p50, MAX(p95) AS p95, MAX(p99) AS p99
+        FROM (SELECT
+                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY t) OVER () AS p50,
+                PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY t) OVER () AS p95,
+                PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY t) OVER () AS p99
+                FROM (SELECT d.timestamp - m.timestamp AS t
+                        FROM deliveries d
+                        JOIN messages m ON m.id = d.message_id
+                       WHERE d.status = 'Sent'
+                         AND d.timestamp >= {{ drain_clock_start.stdout | trim | int }}
+                     ) AS s
+             ) AS p
+  register: drain_ttd_raw
+  changed_when: false
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
 
 # Proof that the pool actually spreads: which source address Postal bound for each delivery.
 # Taken from Postal's own delivery records rather than from the sink log, because the log is
@@ -141,14 +365,25 @@
   delegate_to: "{{ groups['postal_main_db'] | first }}"
   run_once: true
 
+# One name for the ready-row count regardless of which of the two branches produced it.
+- name: Take the ready rows left, whichever branch measured them
+  ansible.builtin.set_fact:
+    drain_ready_final: >-
+      {{ (drain_window_check.query_result[0][0].n
+          if bench_drain_mode == 'window'
+          else drain_check.query_result[0][0].n) | int }}
+  run_once: true
+
 - name: Pin the drain results
   ansible.builtin.set_fact:
     bench_drain_start: "{{ drain_clock_start.stdout | trim }}"
     bench_drain_end: "{{ drain_clock_end.stdout | trim }}"
     bench_drain_queue_total_at_start: "{{ drain_queue_at_start.query_result[0][0].total | int }}"
     bench_drain_queue_ready_at_start: "{{ drain_queue_at_start.query_result[0][0].ready | int }}"
-    bench_drain_completed: "{{ (drain_check.query_result[0][0].n | int) == 0 }}"
-    bench_drain_ready_left: "{{ drain_check.query_result[0][0].n | int }}"
+    # In window mode nothing was waited for, so "completed" is asked of the state at the end
+    # of the window rather than of a loop that never ran.
+    bench_drain_completed: "{{ (drain_ready_final | int) == 0 }}"
+    bench_drain_ready_left: "{{ drain_ready_final | int }}"
     bench_drain_queue_left: "{{ drain_queue_left.query_result[0][0].total | int }}"
     bench_drain_in_flight: "{{ drain_queue_left.query_result[0][0].in_flight | int }}"
     # Delivery is counted over the drain window rather than over the whole log: otherwise it
@@ -161,4 +396,42 @@
       {{ drain_sources_raw.query_result[0]
          | map(attribute='ip') | zip(drain_sources_raw.query_result[0] | map(attribute='n'))
          | map('join', '=') | join(',') }}
+    # Refusals the receiver recorded, over the drain window, independently of Postal.
+    bench_drain_throttled: >-
+      {{ (drain_throttle_after.results | map(attribute='stdout') | map('trim') | map('int') | sum)
+         - (drain_throttle_before.results | map(attribute='stdout') | map('trim') | map('int') | sum) }}
+    bench_drain_throttled_by_ip: >-
+      {{ drain_throttle_by_ip.results | map(attribute='stdout') | map('trim')
+         | select('!=', '') | join(',') }}
+    bench_drain_throttled_by_reason: >-
+      {{ drain_throttle_by_reason.results | map(attribute='stdout') | map('trim')
+         | select('!=', '') | join(',') }}
+    bench_drain_softfail_other: "{{ drain_softfail_raw.query_result[0][0].n | default(0) | int }}"
+    # Every attempt, whatever its outcome. The dividend of retry amplification.
+    bench_drain_attempts: >-
+      {{ drain_attempts_raw.query_result[0] | map(attribute='n') | map('int') | sum }}
+    # Deliveries as Postal itself recorded them. Retry amplification is computed against this
+    # rather than against the sink count: the two come from different clocks and different
+    # windows, and a ratio built from a numerator and denominator that disagree produced
+    # fewer attempts than deliveries — an impossible number that reads as a real one.
+    # The sink count stays the independent check on this one.
+    bench_drain_attempts_sent: >-
+      {{ drain_attempts_raw.query_result[0]
+         | selectattr('status', 'equalto', 'Sent') | map(attribute='n') | map('int') | sum }}
+    bench_drain_attempts_by_status: >-
+      {{ drain_attempts_raw.query_result[0]
+         | map(attribute='status') | zip(drain_attempts_raw.query_result[0] | map(attribute='n'))
+         | map('join', '=') | join(',') }}
+    # Distinct recipients the sink accepted. Equal to the delivered count on a healthy run;
+    # a shortfall means the same recipient was accepted more than once.
+    bench_drain_unique_recipients: >-
+      {{ drain_unique_recipients.results | map(attribute='stdout') | map('trim') | map('int') | sum }}
+    # The counterpart of the above, over the same whole file. Only these two may be compared
+    # with each other; bench_drain_delivered is a different window.
+    bench_drain_accepted_total: >-
+      {{ drain_sink_total.results | map(attribute='stdout') | map('trim') | map('int') | sum }}
+    bench_drain_ttd_count: "{{ drain_ttd_raw.query_result[0][0].n | default(0) | int }}"
+    bench_drain_ttd_p50: "{{ drain_ttd_raw.query_result[0][0].p50 | default(0) | float }}"
+    bench_drain_ttd_p95: "{{ drain_ttd_raw.query_result[0][0].p95 | default(0) | float }}"
+    bench_drain_ttd_p99: "{{ drain_ttd_raw.query_result[0][0].p99 | default(0) | float }}"
   run_once: true

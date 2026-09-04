@@ -6,6 +6,13 @@
 # system capable of opening an outbound SMTP connection — a containment line that does not
 # depend on the firewall or on routing settings.
 #
+# The anvil service is MANDATORY as soon as any smtpd_client_*_limit is non-zero: those
+# limits are not implemented inside smtpd, they are a query to private/anvil. Without this
+# line the limit is dead configuration — smtpd fails to reach the service and accepts the
+# connection anyway, so the cap silently applies to nobody while every connection still pays
+# for the failed lookup. That combination — no rejections yet a throughput drop — is exactly
+# what an earlier run recorded and misread as the cost of anvil itself.
+#
 # The chroot column is "n" everywhere: the queue lives on tmpfs, and the chroot
 # environment that Debian builds when installing the package is not there.
 #
@@ -26,4 +33,5 @@ trace           unix        -       -       n       -       0       bounce
 discard         unix        -       -       n       -       -       discard
 error           unix        -       -       n       -       -       error
 retry           unix        -       -       n       -       -       error
+anvil           unix        -       -       n       -       1       anvil
 postlog         unix-dgram  n       -       n       -       1       postlogd

@@ -71,10 +71,15 @@ bench_prefill_deferred_share: 0.0
 bench_prefill_deferred_delay_s: 3600
 
 # --- Sink realism --------------------------------------------------------
-# These two knobs decide how close the measurement is to production, and they live here
+# These knobs decide how close the measurement is to production, and they live here
 # rather than in the sink role because the report reads them as well — it runs on the DB
 # host, where a default of another role is not visible, and would otherwise print the
 # default instead of the value actually in effect.
+#
+# Two halves of one thing. The response delay models the NETWORK cost of a real MX, the
+# per-IP limits model its POLICY. Neither substitutes for the other: with the delay alone
+# an unlimited receiver still accepts any volume from one address, and with limits alone
+# a session still completes in a millisecond.
 
 # Artificial latency of the sink's SMTP responses, milliseconds. 0 disables it.
 #
@@ -90,19 +95,106 @@ bench_prefill_deferred_delay_s: 3600
 # take SSH down along with it.
 postfix_sink_response_delay_ms: 0
 
-# Simultaneous connections allowed from one client address. 0 means unlimited, which is
-# what the primary profile uses: our concern there is Postal, not the sink.
+# --- Per-IP limits of the receiving side --------------------------------
+# The sink profile is an axis of its own, independent of bench_profile: throttling is a
+# property of the receiver, not of the load, and the primary load profile is frozen.
 #
-# A non-zero value models what real recipient providers do — they cap concurrent sessions
-# per source address — and it is the only way to make an IP pool show its purpose. With one
-# sending address the cap wastes any worker concurrency above it; spread across a pool of
-# addresses, the same cap allows limit x addresses in parallel.
+# WHY THIS EXISTS. Without limits the bench measures the upper bound of Postal against a
+# receiver that no real provider resembles: unlimited concurrency and unlimited volume from
+# a single address. Two of the bench's own conclusions depend on it — the measured
+# concurrency of 32 and the finding that an IP pool only costs throughput. Both are true
+# only against a receiver that does not throttle.
 #
-# Mind the side effect: over the cap Postfix answers 421, which Postal classifies as a
-# SoftFail and defers, so the run stops being a clean drain and becomes a measurement of
-# how much got through before deferral. Mind also that the enforcing anvil service is
-# single-process, so at very high connection rates it becomes a limiter of its own.
-postfix_sink_client_connection_limit: 0
+# THE NUMBERS BELOW ARE AN ASSUMPTION, NOT A MEASUREMENT. The customer has supplied neither
+# the destination-domain mix nor the limits actually observed in production, so these are
+# typical values for a large MX. The report says so on every run; replace them as soon as
+# real data exists, and do not quote a derived IP count as measured until then.
+#
+# WHAT A LIMIT COSTS ON THE POSTAL SIDE. Over any of these caps the sink answers 4xx, which
+# Postal classifies as SoftFail and defers via HasLocking#retry_later:
+#   retry_after = now + (1.3 ** attempts) * 5 minutes,  attempts capped at 18
+# So the FIRST retry is five minutes out and the ladder spans about 31 hours, and neither
+# number is configurable — the base period is hardcoded. A deferred recipient therefore does
+# not come back inside a normal 900 s window. Measure a throttled arm on a PREFILLED queue:
+# with a backlog the worker always has ready rows, the cap binds continuously, and the
+# delivered rate is the answer being sought. On an empty queue the same run would measure
+# the retry ladder instead.
+bench_sink_profile: unlimited
+
+bench_sink_profiles:
+  # Current behaviour and the default: the receiver imposes nothing, so the result is an
+  # upper bound for Postal rather than a forecast for production.
+  unlimited:
+    connection_count: 0
+    connection_rate: 0
+    message_rate: 0
+    recipient_rate: 0
+    rate_time_unit: "60s"
+
+  # Typical behaviour of a large recipient provider. ASSUMPTION — see above.
+  #
+  # The four limits are not independent, and choosing them carelessly measures the wrong one.
+  # Postal opens a new SMTP session roughly every 1.4 to 3.35 messages depending on whether a
+  # pool is in use (measured, see docs/postal-internals.md), so a connection-rate cap of N per
+  # minute permits only about 1.4N messages per minute. A first draft of this profile set the
+  # connection rate to 30 and the message rate to 120: the connection rate bound at roughly a
+  # third of the message rate, delivery fell to zero, and every rejection was a connection-rate
+  # one. Worse, smtpd answers "421 ... too many connections" for the concurrency cap AND the
+  # connection rate, so the two are indistinguishable in the reply — the breakdown is taken
+  # from the log warnings for exactly that reason.
+  #
+  # So the connection rate is set high enough not to bind, and the VOLUME limit is the one
+  # that does. That is what models a provider's throttling: it is volume per address that
+  # providers meter, not the TCP sessions. 120 messages a minute is 2/s per address, which
+  # sits in the same range as the 1.6-1.9 recipients/s one address was measured to deliver.
+  #
+  # The concurrency cap is kept but is not expected to fire on its own: at 10 the bench
+  # produced no rejections at all, because worker threads spend much of their time in the
+  # database and the effective session count never reaches it.
+  provider:
+    connection_count: 10
+    connection_rate: 200
+    message_rate: 120
+    recipient_rate: 120
+    rate_time_unit: "60s"
+
+# The individual knobs stay separate variables rather than being read out of the profile at
+# the point of use: the sink role, the report and calibrate.yml all read them, and -e on the
+# command line has to keep working for a one-off arm.
+postfix_sink_client_connection_limit: "{{ bench_sink_profiles[bench_sink_profile].connection_count }}"
+postfix_sink_client_connection_rate_limit: "{{ bench_sink_profiles[bench_sink_profile].connection_rate }}"
+postfix_sink_client_message_rate_limit: "{{ bench_sink_profiles[bench_sink_profile].message_rate }}"
+postfix_sink_client_recipient_rate_limit: "{{ bench_sink_profiles[bench_sink_profile].recipient_rate }}"
+postfix_sink_anvil_rate_time_unit: "{{ bench_sink_profiles[bench_sink_profile].rate_time_unit }}"
+
+# How the drain arm decides it is finished.
+#
+#   exhaust — wait until no ready row is left. The historical behaviour and the right one
+#             for an unthrottled sink, where a row leaves the queue for good.
+#   window  — measure over a fixed window and report the state at its end.
+#
+# Why the second mode is needed. Under throttling a row does not leave the queue, it goes
+# back into it with retry_after five minutes out, so "no ready rows" stops meaning "the work
+# is done" and starts meaning "everything is either delivered or deferred". That is a real
+# state and the loop does terminate on it, but the number it yields is not a drain rate: the
+# denominator bench_drain_queue_ready_at_start counts rows that were never going to be
+# delivered in this window. A fixed window measures the delivered rate under a binding cap,
+# which is the quantity a throttled arm exists to find.
+bench_drain_mode: "{{ 'window' if bench_sink_throttled | bool else 'exhaust' }}"
+
+# Length of the observation window in window mode. Must exceed the sink's rate accounting
+# unit by a good margin, or the measurement lands inside a single anvil bucket.
+bench_drain_window_s: 600
+
+# True when the receiver imposes anything at all. Guards the parts of the report that are
+# only meaningful under throttling — above all the derived "IP addresses needed" figure,
+# which without a binding limit would describe the ceiling of Postal rather than of the
+# provider, and would be read as the opposite of what it means.
+bench_sink_throttled: >-
+  {{ ((postfix_sink_client_connection_limit | int)
+      + (postfix_sink_client_connection_rate_limit | int)
+      + (postfix_sink_client_message_rate_limit | int)
+      + (postfix_sink_client_recipient_rate_limit | int)) > 0 }}
 
 
 # Run class: debug (everything on one host, unsuitable for comparing builds)

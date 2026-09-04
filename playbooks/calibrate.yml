@@ -117,9 +117,10 @@
           {{ ((calib_delivered | int) / (calib_seconds | int)) | round(1) }} messages/s
           against the required {{ calib_rate }} ({{ bench_calibration_headroom }}x
           of {{ bench_target_rate }}). A Postal run would be measuring the sink,
-          not Postal. Check in_flow_delay, default_process_limit,
-          smtpd_client_connection_count_limit and whether the sink log
-          is hitting the disk limit.
+          not Postal. Check in_flow_delay, default_process_limit and whether the sink log
+          is hitting the disk limit. The per-IP limits are NOT a suspect here: the generator's
+          address is in smtpd_client_event_limit_exceptions precisely so that calibration
+          measures the chain's raw capacity whatever sink profile is deployed.
         success_msg: >-
           The sink sustains
           {{ ((calib_delivered | int) / (calib_seconds | int)) | round(1) }} messages/s

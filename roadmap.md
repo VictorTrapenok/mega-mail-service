@@ -40,27 +40,44 @@ corresponds to priority.
 
 ### Credibility
 
-- **SMTP fault injection.** Profiles `421/450/451`, `550/551/552`, a slow
-  banner, a dropped connection, a TLS refusal, an ambiguous drop after `DATA`.
-  Without them the retry, deferred delivery and suppression paths are not exercised
-  at all. Take into account that in Postal `553` and `500–504` are SoftFail.
-- **A per-IP cap that actually binds.** The knob exists
-  (`postfix_sink_client_connection_limit`, and `smtpd_client_event_limit_exceptions` had to be
-  narrowed to the loopback or the cap applied to nobody), but at a cap of 10 there was not a
-  single rejection: effective simultaneous sessions stayed below it, because worker threads
-  spend much of their time in the database. Demonstrating the cap needs either a much lower
-  value or real concurrency, and it must be separated from the cost of anvil itself, which is
-  consulted per connection and appeared to cost throughput on its own.
-- **Per-IP concurrency limits on the sink side.** The network latency itself is now
-  modelled — `postfix_sink_response_delay_ms` shapes outgoing packets from port 25 with
-  tc netem, and it turned out to overstate draining sevenfold when absent. What is still
-  missing is the second half of real MX behaviour: a cap on concurrent sessions per source
-  address, greylisting and throttling by volume. Without it the measured concurrency of 32
-  looks attainable from a single IP, which no real provider allows.
-- **A duplicate detector.** Comparing the total number accepted by the sink
-  with the number of distinct `X-Postal-MsgID` values. Identical hostnames on the worker
-  containers lead to picking up each other's batches; the names are currently distinct,
-  but that is a safeguard, not a check.
+- **Provider tiers on the sink.** The per-IP limits are now uniform: every destination
+  domain is throttled alike. A real mix is a handful of large providers with hard limits and
+  a long tail with looser ones, and the aggregate ceiling of such a mix is not the ceiling
+  measured against one uniform limit. Doing it properly needs either a policy service keyed
+  on the recipient domain (`check_policy_service`, one daemon, domain-aware) or one Postfix
+  instance per tier on its own address with the DNS zone handing out different MX records.
+  The zone already answers the destination domains from a CoreDNS `template` block, so the
+  second option is mostly addressing work.
+- **Greylisting and reputation quotas.** Neither is modelled. Greylisting in particular
+  changes the shape of a first-contact delivery completely and Postfix has no native support
+  for it — it is a policy service too, so it shares the work above.
+- **The limit values are an assumption.** `bench_sink_profiles.provider` holds typical
+  numbers for a large MX because the customer has supplied neither the destination-domain mix
+  nor the throttling actually observed. Every figure derived from them, above all the count of
+  sending addresses needed for the target rate, inherits that status and the report says so.
+- **Pacing, as a measured variant and then as an optimisation.** The two-arm run showed the
+  sender attempting four times its allowance per address and still using only 65 % of the
+  quota: the receiver meters over 60 s while Postal defers a refusal by a hardcoded five
+  minutes, so the quota goes unused while the work sits parked. Raising concurrency cannot
+  fix this and was measured not to. What is needed is a sender that paces to the receiver's
+  rate — first as a bench variant that proves the ceiling is reachable, then in our own
+  build. Until it exists, no address count for the target rate can be derived, and the report
+  correctly refuses to print one.
+- **Per-destination throttling state in the sender.** Postal has none: no per-domain or
+  per-IP rate accounting, no backoff shorter than the five-minute ladder, no memory that a
+  destination just refused it. That is the concrete gap the pacing work would fill.
+- **A rate limit that binds without the concurrency cap doing the work.** The concurrency cap
+  alone was measured as ineffective at 10: worker threads spend much of their time in the
+  database and the effective session count never reached it. The volume limits are what bind
+  at any concurrency, and the two have not yet been varied separately.
+- **SMTP fault injection beyond throttling.** Permanent rejections `550/551/552`, a slow
+  banner, a dropped connection, a TLS refusal, an ambiguous drop after `DATA`. Temporary
+  rejections are now exercised by the sink profile, but the hard-failure and bounce paths
+  still are not.
+- **The duplicate detector only covers the primary profile.** The drain arm now compares the
+  messages the sink accepted with the distinct `to=` addresses it saw, which catches a
+  recipient delivered twice. With more than one recipient per message that comparison stops
+  being meaningful and the check has to move to distinct `X-Postal-MsgID` values.
 - **A full load matrix**: MIME sizes of 10 KB / 1 MB, 10 and 50 recipients
   per message, domain cardinality 1 / 10,000, tracking and webhooks.
 - **The `tracking` and `webhooks` flags in the profile have no effect.** They are

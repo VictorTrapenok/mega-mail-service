@@ -88,6 +88,82 @@
     | select('match', '^(smtp|relay|lmtp|local|virtual)\\s+unix\\b')
     | list | length > 0
 
+# --- Proof that the per-IP limits bind -------------------------------------
+# A limit that is configured but not enforced is the worst outcome available here: the run
+# looks like a throttled one, produces no rejections, and its numbers get quoted as "Postal
+# copes with provider limits". It has already happened on this bench twice over — the caps
+# were exempt for $mynetworks, and every sending address has to be in mynetworks to relay at
+# all; and master.cf had no anvil service, without which the caps are not implemented at all.
+# Both failures are silent and look identical from the outside.
+#
+# So the limit is proven by exercising it, the way postal_sending_ips proves an address with
+# a real MAIL FROM rather than with a ping. The probe runs FROM A WORKER HOST, not from the
+# sink and not from the loopback: every exempt address would sail past the cap and the probe
+# would pass against a sink enforcing nothing. Running it from where the mail actually comes
+# from is the only version of this check that cannot pass vacuously.
+
+# The exemption list is the second way a limit becomes dead configuration, and it fails in
+# exactly the same silent shape as a missing anvil: everything deploys, nothing is refused,
+# and the run reads as "Postal copes". It happens whenever an exempt address is also a
+# sending address — which is the normal state of the single-host layout, where the generator
+# and the workers are the same machine.
+- name: Check that no exempt address is also a sending address
+  ansible.builtin.assert:
+    that:
+      - (postfix_sink_ratelimit_exempt | intersect(postal_sending_addrs + postal_worker_addrs)) | length == 0
+    fail_msg: >-
+      {{ postfix_sink_ratelimit_exempt | intersect(postal_sending_addrs + postal_worker_addrs) | join(', ') }}
+      is exempt from the per-IP limits and is also an address Postal sends from, so the limits
+      would apply to nobody while the run still looked throttled. This is the normal case on a
+      single host: a throttled arm needs the generator and the workers on different machines.
+      Use the distributed inventory, or override postfix_sink_ratelimit_exempt.
+  when: bench_sink_throttled | bool
+
+- name: Check that anvil is present whenever any per-IP limit is set
+  ansible.builtin.assert:
+    that:
+      - sink_master.stdout_lines | select('match', '^anvil\\s+unix\\b') | list | length > 0
+    fail_msg: >-
+      A per-IP limit is configured but master.cf has no anvil service. Those limits are not
+      implemented inside smtpd — they are a query to private/anvil — so the cap would apply
+      to nobody while every connection still paid for the failed lookup.
+  when: bench_sink_throttled | bool
+
+- name: Prove that the connection cap rejects over the limit
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "-c"
+      - |
+        import socket, sys
+        host, limit, port = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+        # The cap counts SIMULTANEOUS sessions, so every socket is held open. Reading a
+        # banner and closing before opening the next one would free the slot each time and
+        # the cap would never be reached, making the probe pass on an unenforced sink.
+        held, banners = [], []
+        try:
+            for _ in range(limit + 1):
+                held.append(socket.create_connection((host, port), timeout=15))
+            for s in held:
+                s.settimeout(15)
+                banners.append(s.recv(1024).decode("utf-8", "replace").strip())
+        finally:
+            for s in held:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+        if not [b for b in banners if b.startswith("421")]:
+            raise SystemExit(
+                "%d simultaneous connections against a cap of %d were all accepted: the cap "
+                "is not enforced. Banners: %s" % (len(banners), limit, banners))
+      - "{{ svc_ip }}"
+      - "{{ postfix_sink_client_connection_limit }}"
+      - "{{ postfix_sink_port }}"
+  delegate_to: "{{ groups['postal_workers'] | first }}"
+  changed_when: false
+  when: (postfix_sink_client_connection_limit | int) > 0
+
 # --- Artificial response latency -------------------------------------------
 # A sink that answers instantly measures the upper bound of Postal, not production
 # speed: draining is waiting on the network, and its ceiling equals concurrency

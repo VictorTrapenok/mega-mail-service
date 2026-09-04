@@ -188,6 +188,60 @@ this means: **`553` and `500–504` are SoftFail in Postal, not a final rejectio
 The fault injection matrix must proceed from this rather than from RFC 5321 semantics,
 otherwise the reconciliation will carry an unexplained constant bias.
 
+## The retry ladder
+
+Every temporary failure goes through `HasLocking#retry_later`
+(`app/models/concerns/has_locking.rb`):
+
+```ruby
+def retry_later(time = nil)
+  retry_time = time || calculate_retry_time(attempts, 5.minutes)
+  update_columns(locked_by: nil, locked_at: nil,
+                 retry_after: Time.now + retry_time, attempts: attempts + 1)
+end
+
+def calculate_retry_time(attempts, initial_period)
+  (1.3**attempts) * initial_period
+end
+```
+
+**The first retry is five minutes out**, and each subsequent one is 30 % further. The base
+period is hardcoded — there is no environment variable for it. With
+`POSTAL_DEFAULT_MAXIMUM_DELIVERY_ATTEMPTS` at its default of 18, the ladder spans about
+31 hours in total.
+
+This decides how a throttled run must be shaped. A deferred recipient cannot come back inside
+a 900-second window, so an arm that measures a throttled sink on an EMPTY queue measures the
+retry ladder rather than the receiver's limit. It has to be measured on a prefilled queue,
+where the worker always has ready rows and the cap binds continuously.
+
+At the attempt ceiling `SingleMessageProcessor#check_delivery_attempts` writes `HardFail`,
+removes the queue row **and adds the recipient to the suppression list** with the reason
+"too many soft fails" — so sustained throttling eventually eats the recipient pool, and
+`Held` above zero stops being a sign of a broken bench.
+
+Two consequences for the reconciliation. A deferred message keeps its queue row *and* carries
+a status on its `messages` row, so `SoftFail` must not be counted as terminal or every
+deferred recipient is counted twice. The same is true of `Error`: `MessageDequeuer::Base#handle_exception`
+calls `retry_later` on exactly the same path. Only `Pending`, `SoftFail` and `Error` keep
+their queue row; a message never ends its life in `SoftFail`.
+
+### The receiver can shorten the ladder
+
+`SMTPSender` parses the remote reply text before falling back to the ladder:
+
+```ruby
+if e.message =~ /(\d+) seconds/
+  r.retry = ::Regexp.last_match(1).to_i + 10
+elsif e.message =~ /(\d+) minutes/
+  r.retry = (::Regexp.last_match(1).to_i * 60) + 10
+```
+
+So a rejection saying "try again in 30 seconds" produces a 40-second retry instead of five
+minutes. Postfix's own anvil rejections carry no such hint and cannot be reworded, but this is
+the lever any future policy-service sink would use to make throttled runs measurable in a
+short window.
+
 ## The resolver
 
 `DNSResolver.local` parses `dns.resolv_conf_path` for `nameserver`

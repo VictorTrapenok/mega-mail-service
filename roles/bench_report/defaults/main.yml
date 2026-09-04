@@ -13,3 +13,31 @@ bench_report_kind: combined
 # The generator phase whose summary is taken as the result. In a drain run there is no
 # working phase at all: the messages are created by the fill, and what is measured is the draining.
 bench_report_loadgen_phase: "{{ 'prefill' if bench_report_kind == 'drain' else 'steady' }}"
+
+# Statuses whose message KEEPS its queue row. They must be excluded from the terminal side of
+# the reconciliation, or every deferred message is counted twice — once as a terminal state
+# and once as a queue remainder — and the run is blamed on lost messages.
+#
+#   Pending  — never attempted, sitting in the queue.
+#   SoftFail — a temporary rejection; HasLocking#retry_later put the row back with retry_after.
+#   Error    — an internal exception; base.rb calls retry_later on exactly the same path.
+#
+# Everything else is terminal and its row is gone: at the attempt ceiling Postal writes
+# HardFail and removes the row, so a SoftFail never outlives its queue row. Read out of
+# Postal 3.3.7 rather than assumed. This mattered nowhere until the sink began refusing:
+# without throttling SoftFail is always zero, which is why the old formulation survived.
+bench_report_in_queue_statuses:
+  - Pending
+  - SoftFail
+  - Error
+
+# Every status the reconciliation knows how to classify. Anything outside this list is
+# treated as terminal by the sum, which is why an unexpected one fails the run instead.
+bench_report_known_statuses:
+  - Pending
+  - SoftFail
+  - Error
+  - Sent
+  - HardFail
+  - Held
+  - Processed

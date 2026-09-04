@@ -90,5 +90,18 @@
     bench_drain_in_flight: "{{ hostvars[db_host].bench_drain_in_flight }}"
     bench_drain_delivered: "{{ hostvars[db_host].bench_drain_delivered }}"
     bench_drain_sources: "{{ hostvars[db_host].bench_drain_sources }}"
+    bench_drain_throttled: "{{ hostvars[db_host].bench_drain_throttled }}"
+    bench_drain_throttled_by_ip: "{{ hostvars[db_host].bench_drain_throttled_by_ip }}"
+    bench_drain_throttled_by_reason: "{{ hostvars[db_host].bench_drain_throttled_by_reason }}"
+    bench_drain_softfail_other: "{{ hostvars[db_host].bench_drain_softfail_other }}"
+    bench_drain_attempts: "{{ hostvars[db_host].bench_drain_attempts }}"
+    bench_drain_attempts_sent: "{{ hostvars[db_host].bench_drain_attempts_sent }}"
+    bench_drain_attempts_by_status: "{{ hostvars[db_host].bench_drain_attempts_by_status }}"
+    bench_drain_unique_recipients: "{{ hostvars[db_host].bench_drain_unique_recipients }}"
+    bench_drain_accepted_total: "{{ hostvars[db_host].bench_drain_accepted_total }}"
+    bench_drain_ttd_count: "{{ hostvars[db_host].bench_drain_ttd_count }}"
+    bench_drain_ttd_p50: "{{ hostvars[db_host].bench_drain_ttd_p50 }}"
+    bench_drain_ttd_p95: "{{ hostvars[db_host].bench_drain_ttd_p95 }}"
+    bench_drain_ttd_p99: "{{ hostvars[db_host].bench_drain_ttd_p99 }}"
   roles:
     - bench_report

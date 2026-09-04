@@ -112,6 +112,52 @@ ansible-playbook -i inventories/distributed playbooks/drain.yml \
   -e bench_profile=wide_domains
 ```
 
+### Measuring against a receiver that refuses
+
+The sink profile is a separate axis from the load profile: it sets what the RECEIVER does,
+not what is sent. `unlimited` is the default and accepts anything from one address, which no
+real provider does; `provider` applies per-IP caps on concurrent sessions and on volume.
+
+```bash
+ansible-playbook -i inventories/distributed playbooks/site.yml --limit aux \
+  -e bench_sink_profile=provider
+ansible-playbook -i inventories/distributed playbooks/drain.yml \
+  -e bench_sink_profile=provider -e postfix_sink_response_delay_ms=75
+```
+
+The sink must be redeployed for the profile to take effect — the limits live in its
+configuration. Deployment proves them rather than trusting them: it opens one connection more
+than the cap, from a worker host, and fails if nothing is refused. Two earlier attempts at
+this configured a cap that applied to nobody, and both looked like successful throttled runs.
+
+Use `drain.yml` for this, not `benchmark.yml`. The combined run waits for the queue to empty,
+and under a binding cap it never does — the run would spend its whole drain timeout and report
+a queue that did not clear, which is true but says nothing about the receiver.
+
+Two things change under a throttling profile, both automatically:
+
+- The drain switches to `window` mode. A refused message returns to the queue with
+  `retry_after` five minutes out, so "no ready rows left" no longer means the work is done,
+  and the rate is measured over a fixed window instead. Set `bench_drain_window_s` to change it.
+- The queue must be prefilled, which `drain.yml` already does. Postal's first retry is five
+  minutes away, so a throttled run on an empty queue measures the retry ladder rather than
+  the receiver.
+
+The report then carries a throttling section: which limit was hit, refusals by source address,
+retry amplification, the attempt rate against goodput, time to delivery, and an estimate of how
+many sending addresses the target rate needs. That last figure only appears if something was
+actually refused — without refusals it would describe Postal's ceiling while reading as the
+provider's.
+
+Read the "which limit was hit" table first. The four limits are not independent: Postal reuses
+an SMTP session for only 1.4 to 3.35 messages, so a connection-rate cap binds well below the
+message-rate one unless it is set several times higher. A run dominated by `Connection_rate`
+is measuring how often Postal opens a socket, not how much volume the receiver allows.
+
+**The limit values are an assumption**, not a measurement: nobody has supplied the real
+destination mix or the throttling actually observed in production. The report says so on every
+run. Replace them in `bench_sink_profiles` when real numbers exist.
+
 ## What each playbook does
 
 | Playbook | Purpose | Repeatable |
@@ -160,6 +206,7 @@ credentials, production DKIM keys, production dumps.
 ## What the bench does not do yet
 
 The deferred items are listed in [roadmap.md](roadmap.md). In short: there is no Prometheus and
-no exporters (the six numbers needed are captured by samplers into CSV), no
-SMTP fault injection for retries and temporary rejections, no queue
-prefill, no Ruby and MariaDB profiling, no full load matrix.
+no exporters (the six numbers needed are captured by samplers into CSV), no Ruby and MariaDB
+profiling, and no full load matrix. Temporary rejections are now exercised by the sink
+profile, but permanent failures, bounces and greylisting are not, and the per-IP limits are
+uniform across destinations where a real mix has tiers.

@@ -118,6 +118,22 @@
   register: running_image
   changed_when: false
 
+# The pool state decides how the per-address figures are read, so it is taken from the running
+# container rather than from group_vars. They disagreed on the first throttled run: the report
+# said pools were disabled while six outbound addresses were plainly at work in the refusal
+# breakdown. A variable describes what someone meant to deploy; this describes what ran.
+- name: Read whether the running Postal actually uses IP pools
+  ansible.builtin.shell:
+    cmd: >-
+      docker inspect --format '{% raw %}{{range .Config.Env}}{{println .}}{{end}}{% endraw %}'
+      $(docker compose -f {{ postal_dir }}/docker-compose.yml ps -q worker1) 2>/dev/null
+      | grep -oP '(?<=^POSTAL_USE_IP_POOLS=).*' || echo unknown
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ groups['postal_workers'] | first }}"
+  register: running_ip_pools
+  changed_when: false
+
 - name: Fetch the summary of the measured generator phase
   ansible.builtin.slurp:
     src: "{{ loadgen_results_dir }}/{{ bench_run_id }}-{{ bench_report_loadgen_phase }}-summary.json"
@@ -143,18 +159,18 @@
     bench_in_flight: "{{ queue_left.query_result[0][0].in_flight | default(0) | int }}"
   run_once: true
 
+# A deferred message keeps its queue row AND carries a status, so it lands on both sides of
+# the identity unless its status is excluded. Which statuses those are, and why the set is
+# enumerated rather than derived, is in bench_report_in_queue_statuses in defaults/main.yml.
 - name: Compute the reconciliation discrepancy
   ansible.builtin.set_fact:
-    # The terminal buckets are taken from the actual statuses rather than from a
-    # known-in-advance list: an unaccounted-for status would otherwise silently drop out
-    # of the identity and turn into "unaccounted" with no explanation.
-    # Pending is NOT a terminal state but exactly the messages sitting
-    # in the queue. Adding it to the queue remainder means counting them twice.
-    # This did not show up before only because by report time the drain
-    # had finished and Pending was always zero.
     bench_pending: "{{ bench_buckets.Pending | default(0) | int }}"
+    # Deferred messages, whatever put them there. Reported separately because under a
+    # throttling sink profile this is the bucket that carries the whole effect.
+    bench_deferred: >-
+      {{ (bench_buckets.SoftFail | default(0) | int) + (bench_buckets.Error | default(0) | int) }}
     bench_terminal: >-
-      {{ bench_buckets | dict2items | rejectattr('key', 'equalto', 'Pending')
+      {{ bench_buckets | dict2items | rejectattr('key', 'in', bench_report_in_queue_statuses)
          | map(attribute='value') | map('int') | sum }}
     # In an ingress run the queue remainder must not be taken over the whole table: the workers
     # are stopped, so it also holds the warm-up messages, whereas what was accepted
@@ -162,10 +178,25 @@
     # match the queue increment over the same window.
     bench_unaccounted: >-
       {{ (bench_accepted | int)
-         - (bench_buckets | dict2items | rejectattr('key', 'equalto', 'Pending')
+         - (bench_buckets | dict2items | rejectattr('key', 'in', bench_report_in_queue_statuses)
             | map(attribute='value') | map('int') | sum)
          - (((bench_ingress_queue_after | int) - (bench_ingress_queue_before | int))
             if bench_report_kind == 'ingress' else (bench_queued_now | int)) }}
+  run_once: true
+
+# An unknown status is treated as terminal by the sum above. If a future Postal version adds
+# one that keeps its queue row, the identity would quietly double-count it and the run would
+# be blamed on lost messages. Failing loudly here costs one line and names the real cause.
+- name: Check that every status is classified
+  ansible.builtin.assert:
+    that:
+      - (bench_buckets | list) | difference(bench_report_known_statuses) | length == 0
+    fail_msg: >-
+      Unknown message status
+      {{ (bench_buckets | list) | difference(bench_report_known_statuses) | join(', ') }}.
+      The reconciliation assumes anything unlisted is terminal and its queue row is gone;
+      if that is wrong for this status, the identity double-counts it. Classify it in
+      bench_report_in_queue_statuses before trusting this run.
   run_once: true
 
 - name: Create the reports directory

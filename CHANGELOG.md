@@ -306,3 +306,162 @@ All at a 75 ms sink response delay, 2 worker replicas x 16 threads, queue ~2.6-2
   spend much of their time in the database rather than on the network. Enabling the cap did
   cost throughput anyway (50.0 to 27.8 without a pool, zero rejections), which points at the
   single-process anvil being consulted per connection. Single runs; treat the cause as probable.
+
+### The per-IP limits of the receiver, and why they had never bound
+
+The bench could configure a per-IP connection cap but had never enforced one. Two independent
+defects produced the identical symptom — a deployment that looks throttled and refuses
+nothing — and the second one explains a conclusion recorded here earlier.
+
+- **`smtpd_client_event_limit_exceptions` defaults to `$mynetworks`.** Every sending address
+  has to be in `mynetworks` to be allowed to relay at all, so the caps were exempt for exactly
+  the clients they were meant to limit. Fixed previously; the exemption is now the loopback
+  plus the load generator, which is the measuring instrument rather than a sender under test.
+- **`master.cf` had no `anvil` service.** The `smtpd_client_*_limit` parameters are not
+  implemented inside smtpd — they are a query to `private/anvil`. Without the service the cap
+  applies to nobody while every connection still pays for the failed lookup. That is both
+  halves of what was recorded here as "at a cap of 10 there was not one rejection… enabling
+  the cap did cost throughput anyway (50.0 to 27.8), which points at the single-process anvil
+  being consulted per connection". Anvil was not being consulted; it was not running. The
+  throughput cost was the failed lookup, not the service. **The earlier conclusion should be
+  read as withdrawn**, and the cost of anvil itself is still unmeasured.
+
+Verified rather than assumed: 11 simultaneous connections against a cap of 10 now yield one
+`421` from a worker host and none from the exempt loopback.
+
+- The sink role proves the caps at deploy time, from a worker host, and fails if nothing is
+  refused. A probe from the sink host or the loopback would pass against an unenforced sink.
+- It also refuses to deploy when an exempt address is also a sending address — the normal
+  state of the single-host layout, where the generator and the workers are one machine.
+- The three volume limits are now variables rather than hardcoded zeros, together with
+  `anvil_rate_time_unit`. The concurrency cap alone was measured as ineffective at 10: worker
+  threads spend much of their time in the database and never reach it. Volume limits bind at
+  any concurrency.
+
+### Sink profile as an axis, and what a throttled run measures
+
+`bench_sink_profile` selects the receiver's policy independently of the frozen load profile:
+`unlimited` (the default, an upper bound for Postal) or `provider`. The limit values are an
+ASSUMPTION — no destination mix or observed throttling has been supplied — and the report
+labels them as such on every run.
+
+Read out of the Postal 3.3.7 sources and now documented in `docs/postal-internals.md`:
+
+- `HasLocking#retry_later` sets `retry_after = now + (1.3 ** attempts) * 5 minutes`. The base
+  period is hardcoded; the first retry is five minutes out and 18 attempts span ~31 hours.
+  A throttled arm therefore has to run on a prefilled queue, or it measures the retry ladder
+  instead of the receiver.
+- At the attempt ceiling Postal writes `HardFail`, drops the queue row and adds the recipient
+  to the suppression list, so `Held` above zero stops being a sign of a broken bench.
+- `SMTPSender` parses "N seconds" / "N minutes" out of the remote reply and uses it as the
+  retry delay. Postfix's anvil rejections carry no such hint, but this is the lever a future
+  policy-service sink would use to compress a throttled run into a short window.
+
+**The reconciliation would have double-counted every deferred message.** It treated every
+status except `Pending` as terminal, while a deferred message keeps its queue row *and*
+carries a status, so it was counted on both sides of the identity. `SoftFail` and `Error` are
+now classified as in-queue — both go through `retry_later` — and an unknown status fails the
+run rather than being silently assumed terminal. This was invisible until the sink began
+refusing, because without throttling `SoftFail` is always zero.
+
+The drain gained a `window` mode, selected automatically under a throttling profile: once a
+refused row returns to the queue, "no ready rows left" means "everything is either delivered
+or deferred" and the rate divided by the starting row count divides by work that was never
+going to be done.
+
+New in the report: which limit was hit, refusals by source address, retry amplification
+(attempts per delivered recipient), the attempt rate against goodput, time to delivery
+p50/p95/p99 — a different quantity from ingress latency, and the one the recipient
+experiences — and an estimate of how many sending addresses the target rate needs. That estimate is printed only
+when something was actually refused; without refusals it would describe Postal's ceiling while
+reading as the provider's.
+
+A duplicate detector came with it: distinct `to=` addresses at the sink against messages
+accepted. Both sides are counted over the whole log and only against each other — the
+delivered figure used for the rate is a delta across the measured window, and comparing the
+two would report every delivery made while the workers were still starting as a duplicate.
+
+**A window misalignment in the drain arm, pre-existing and now fixed.** The sink counters were
+read before the workers were started while the clock was recorded after they became ready, so
+everything delivered during startup landed inside the sink delta and outside every window the
+database was asked about. It surfaced as more recipients delivered than attempts made — 232
+against 190 — which is impossible, and was the only reason it was noticed at all. All the
+counters are now read after the clock.
+
+The report also reads `POSTAL_USE_IP_POOLS` back from the running container instead of
+printing the variable. The two disagreed on the first throttled run: the report said pools
+were disabled while six outbound addresses were plainly at work in the refusal breakdown.
+
+**Two of the four limits are indistinguishable in the reply, and the first draft of the
+profile measured the wrong one.** smtpd answers `421 ... too many connections` for both the
+concurrency cap and the connection RATE cap, so a breakdown built from the reply Postal stored
+files every rate rejection under concurrency — which is exactly what the first throttled run
+reported. The breakdown now comes from the log warnings, which name the limit outright, and
+the same run re-read that way turned out to be 608 connection-rate rejections and not one
+concurrency rejection.
+
+That also mis-tuned the profile. Postal reuses an SMTP session for only 1.4 to 3.35 messages,
+so a connection-rate cap of 30/min permits about 42 messages a minute and bound at a third of
+the 120/min message rate: delivery over the measured window fell to zero and the arm measured
+how often Postal opens a socket rather than how much volume the receiver allows. The
+connection rate is now set high enough not to bind, so the volume limit is the one that does —
+which is what a provider actually meters.
+
+**The delivery-time percentiles were all coming out equal, and the query looked right.**
+Putting `COUNT(*)` in the same SELECT as `PERCENTILE_CONT(...) OVER ()` does not do what it
+appears to: the aggregate collapses the set to one row first, and the window functions then
+run over that single row. p50, p95 and p99 all read 26.6 s against a real spread of 13.8 to
+29.9 s. Computed in a subquery and aggregated afterwards they read 25.7 / 29.4 / 29.6.
+
+Counting details that cost nothing to get wrong and everything to notice: the four anvil
+warning strings and the reply texts were read out of the `smtpd` binary, not guessed. Postfix
+says `450 4.7.1 Error: too much mail`, not "too many messages", and logs the client as
+`unknown[10.1.0.2]` rather than as a bare address — the first draft of both greps returned
+zero against a log that did contain the events.
+
+### Measured: what a throttling receiver does to Postal
+
+Two arms, identical but for the sink profile: 6 outbound addresses, 75 ms sink response
+delay, 2 worker replicas x 2 threads. The `provider` profile caps each source address at 120
+messages per 60 s, i.e. 2.0 recipients/s per address, 12/s across the six.
+
+The throttled arm needs a bigger prefill than the baseline and that is not incidental: under a
+binding cap a refused row leaves the ready pool for five minutes exactly as a delivered one
+leaves it for good, so the queue has to cover the ATTEMPT rate for the whole window. A first
+attempt at 15 000 ran dry inside the window and understated goodput by a third (8.0 against
+13.0). The report now detects that and says so; the numbers below are from 25 000, where the
+pool never emptied.
+
+| | Baseline (`unlimited`) | Provider limits |
+|---|---|---|
+| Queue at start | 14 350 | 24 495 |
+| Delivery attempts per second | 47.4 | 69.0 |
+| **Goodput, recipients/s** | **47.0** | **13.0** |
+| Retry amplification | 1.00 | 5.32 |
+| Refusals recorded by the receiver | 0 | 17 023 |
+| Reconciliation discrepancy | 0 % | 0 % |
+
+**Postal worked HARDER under the cap and delivered a quarter as much.** The attempt rate rose
+from 47 to 69 per second because a refusal is cheaper than a delivery — `450` arrives at
+`MAIL FROM` and the message body is never transferred — so the worker cycles faster while
+5.32 attempts are spent per recipient that lands. None of that is visible in the drain rate,
+which counts only what arrived, and that gap is the reason this arm exists.
+
+Which limit bound: message rate 17 085 rejections, concurrency 9, connection rate 0. The
+volume cap dominates as intended; the concurrency cap still cannot bind at this delivery
+concurrency, consistent with every earlier run.
+
+**The addresses reached their quota: 2.08 recipients/s each against an allowance of 2.0.**
+That is what makes the extrapolation legitimate, and the report only prints it in that case —
+**about 28 sending addresses for the target of 58 recipients/s**, i.e. 5M per day. The limits
+it rests on are an assumption, and the figure inherits that: read it as the shape of the
+answer — capacity is bought in addresses, not in cores — rather than as a procurement number.
+
+The earlier, understated run is still instructive: at 15 000 prefilled the addresses reached
+only 65 % of their allowance while attempting four times it, because the receiver meters over
+60 s and Postal defers a refusal by a hardcoded five minutes. It empties the window's quota in
+a burst, is refused for the rest of it, and the refused work parks for five minutes rather
+than the seconds until the quota rolls over. Pacing output to the receiver's rate is therefore
+worth more than raising delivery concurrency, which was already several times the allowance
+and bought nothing. That is a concrete target for our own build: Postal has no per-destination
+rate accounting and no backoff shorter than the five-minute ladder.

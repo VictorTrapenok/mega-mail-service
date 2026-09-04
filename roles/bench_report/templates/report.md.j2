@@ -46,8 +46,16 @@ Postal {{ postal_image_ref }}, profile `{{ bench_profile }}`, run class **{{ ben
 | Worker replicas | {{ postal_worker_replicas }} |
 | Threads per worker | {{ postal_worker_threads }} (effective concurrency {{ (postal_worker_replicas | int) * (postal_worker_threads | int) }}) |
 | Main DB connection pool | {{ postal_main_db_pool_size }} |
-| IP pools | {{ ('enabled, ' ~ (postal_sending_ips | default([]) | length) ~ ' outbound addresses') if postal_use_ip_pools | bool else 'disabled' }} |
-| Sink per-IP connection limit | {{ postfix_sink_client_connection_limit | default(0) | int if (postfix_sink_client_connection_limit | default(0) | int) > 0 else 'unlimited' }} |
+{% set pools_running = (running_ip_pools.stdout | default('unknown') | trim) %}
+| IP pools (running) | {{ ('enabled, ' ~ (postal_sending_ips | default([]) | length) ~ ' outbound addresses') if pools_running == 'true' else ('disabled' if pools_running == 'false' else 'could not be read from the container') }} |
+{% if pools_running in ['true', 'false'] and (pools_running == 'true') != (postal_use_ip_pools | bool) %}
+| | **The configuration says `postal_use_ip_pools={{ postal_use_ip_pools }}` while the running container says `{{ pools_running }}`.** Postal was not redeployed after the variable changed. The row above reports what actually ran. |
+{% endif %}
+| Sink profile | `{{ bench_sink_profile | default('unlimited') }}`{{ ' — ASSUMED provider limits, not measured' if bench_sink_throttled | default(false) | bool else '' }} |
+| Sink per-IP concurrent sessions | {{ postfix_sink_client_connection_limit | default(0) | int if (postfix_sink_client_connection_limit | default(0) | int) > 0 else 'unlimited' }} |
+| Sink per-IP connection rate | {{ (postfix_sink_client_connection_rate_limit | default(0) | int ~ ' / ' ~ postfix_sink_anvil_rate_time_unit | default('60s')) if (postfix_sink_client_connection_rate_limit | default(0) | int) > 0 else 'unlimited' }} |
+| Sink per-IP message rate | {{ (postfix_sink_client_message_rate_limit | default(0) | int ~ ' / ' ~ postfix_sink_anvil_rate_time_unit | default('60s')) if (postfix_sink_client_message_rate_limit | default(0) | int) > 0 else 'unlimited' }} |
+| Sink per-IP recipient rate | {{ (postfix_sink_client_recipient_rate_limit | default(0) | int ~ ' / ' ~ postfix_sink_anvil_rate_time_unit | default('60s')) if (postfix_sink_client_recipient_rate_limit | default(0) | int) > 0 else 'unlimited' }} |
 | Queue batching | {{ 'enabled' if postal_batch_queued_messages else 'disabled' }} |
 | Worker limits | {{ postal_limits.worker.cpus }} CPU / {{ postal_limits.worker.memory }} |
 | SMTP limits | {{ postal_limits.smtp.cpus }} CPU / {{ postal_limits.smtp.memory }} |
@@ -118,13 +126,42 @@ Postal confirmed is in the queue, and nothing was lost along the way.
 | of which deferred | {{ (bench_drain_queue_total_at_start | int) - (bench_drain_queue_ready_at_start | int) }} |
 | **Queue drain rate** | **{{ drain_rate | round(1) }}** recipients/s |
 | Delivered to the sink | {{ bench_drain_delivered }} |
+| Accepted by the sink over the whole run | {{ bench_drain_accepted_total | default('n/a') }} |
+| Of them distinct recipients | {{ bench_drain_unique_recipients | default('n/a') }} |
 | Drain time | {{ drain_span }} s |
-| Ready rows exhausted | {{ 'yes' if bench_drain_completed else 'NO' }} |
+| Drain mode | `{{ bench_drain_mode | default('exhaust') }}`{{ ' (fixed window of ' ~ bench_drain_window_s | default(0) ~ ' s)' if (bench_drain_mode | default('exhaust')) == 'window' else '' }} |
+| Ready rows exhausted | {{ 'yes' if bench_drain_completed else 'NO' }}{{ ' — the queue ran dry, see below' if (bench_drain_mode | default('exhaust')) == 'window' and bench_drain_completed else '' }} |
 | Left in the queue | {{ bench_drain_queue_left }} (of which in flight {{ bench_drain_in_flight }}) |
 
+{% if (bench_drain_mode | default('exhaust')) == 'window' and bench_drain_completed %}
+> **The queue ran dry before the window closed, so every rate in this run is understated.**
+> The window is a fixed {{ bench_drain_window_s | default(0) }} s, but no ready row was left
+> at the end of it: the worker spent part of that time with nothing to do, and the delivered
+> total was still divided by the whole window. Under a binding cap the ready pool drains far
+> faster than deliveries alone — a refused row leaves it for five minutes just as a delivered
+> one leaves it for good — so the prefill has to cover the ATTEMPT rate for the whole window,
+> not the delivery rate. Raise `bench_prefill_recipients` until this warning disappears.
+{% endif %}
+{% if (bench_drain_mode | default('exhaust')) == 'window' %}
+The run was measured over a fixed window rather than to exhaustion. Under a binding per-IP
+cap a refused row does not leave the queue — it returns to it with `retry_after` five minutes
+out — so "no ready rows left" would mean "everything is either delivered or deferred", and a
+rate divided by the starting row count would divide by work that was never going to be done
+in this window. The rate above is what actually reached the sink per second of the window.
+{% else %}
 The rate is computed over the ready rows: the worker will not take deferred ones until
 `retry_after` expires, and including them in the dividend would mean dividing work
 by a time during which it could not have been done.
+{% endif %}
+
+{% set unique = bench_drain_unique_recipients | default(0) | int %}
+{% set accepted_all = bench_drain_accepted_total | default(0) | int %}
+{% if unique > 0 and accepted_all != unique %}
+> **Over the whole run the sink accepted {{ accepted_all }} messages but only {{ unique }}
+> distinct recipients, a difference of {{ accepted_all - unique }}.** The same addressee was
+> delivered more than once. The usual cause is two worker containers sharing a hostname and
+> picking up each other's batches. Throughput above is overstated by that proportion.
+{% endif %}
 
 {% if bench_drain_sources | default('') | length > 0 %}
 ### Source addresses seen by the sink
@@ -138,10 +175,202 @@ address here means the pool is not in use at all; a strong skew means part of it
 | `{{ pair.split('=')[0] }}` | {{ pair.split('=')[1] }} |
 {% endfor %}
 {% endif %}
+### Throttling by the receiver
+
+{% set throttled = bench_drain_throttled | default(0) | int %}
+{% set attempts = bench_drain_attempts | default(0) | int %}
+{% set delivered = bench_drain_delivered | int %}
+{# How many outbound addresses the load was actually spread over. Postal only records one in
+   deliveries.details when a pool bound it, so with pools off the table is empty and the count
+   is one by construction. Falling back to one whenever the table is empty would be wrong the
+   other way round — with pools ON and the parsing broken it would silently divide by one and
+   overstate the per-address rate several times over. So the fallback is conditional on the
+   pool state read back from the running container. #}
+{% set addrs_seen = (bench_drain_sources | default('')).split(',') | select('!=', '') | list | length %}
+{% set addrs = addrs_seen if addrs_seen > 0 else (1 if pools_running == 'false' else 0) %}
+{% if not (bench_sink_throttled | default(false) | bool) %}
+The sink imposed no per-IP limits: it accepted every session and every message from a single
+address. That is an upper bound for Postal, not a forecast — no recipient provider behaves
+this way. Everything below is reported for completeness.
+{% elif throttled == 0 %}
+> **The limits were configured but nothing was refused.** Either the sender never reached
+> them, or they are not being enforced. Both look identical in the numbers, and only the
+> second one invalidates the run. The sink role proves enforcement at deploy time by opening
+> one connection more than the cap; if that check passed, the sender simply stayed below the
+> limits and the run measures Postal rather than the provider.
+{% endif %}
+
+| Metric | Value |
+|---|---|
+{% set sent_db = bench_drain_attempts_sent | default(0) | int %}
+| Refusals recorded by the sink | {{ throttled }} |
+| Delivery attempts (all outcomes) | {{ attempts }} |
+| Of them delivered | {{ sent_db }} |
+| **Retry amplification** | {{ (attempts / sent_db) | round(2) if sent_db > 0 else 'n/a' }} attempts per delivered recipient |
+| Attempt rate | {{ (attempts / drain_span) | round(1) if drain_span > 0 else 'n/a' }} attempts/s |
+| **Goodput** | {{ (sent_db / drain_span) | round(1) if drain_span > 0 else 'n/a' }} recipients/s delivered |
+| Time to delivery p50 | {{ (bench_drain_ttd_p50 | default(0) | float) | round(1) }} s |
+| Time to delivery p95 | {{ (bench_drain_ttd_p95 | default(0) | float) | round(1) }} s |
+| Time to delivery p99 | {{ (bench_drain_ttd_p99 | default(0) | float) | round(1) }} s |
+
+Retry amplification is the work Postal did divided by the work that landed, and the gap
+between the two rates above is the same thing per second. Every attempt beyond the first is a
+full dequeue cycle — the claim query, the batch assembly, the MIME read, the SMTP session —
+spent on a message that was refused. That is the cost of throttling which the drain rate alone
+does not show: the worker can be saturated while goodput sits far below it.
+
+Time to delivery is measured from acceptance to the delivery record, not from the HTTP call.
+It is a different quantity from the ingress latency above: under throttling the two diverge
+by the length of the retry ladder, and it is this one that the recipient experiences.
+{% if bench_report_kind == 'drain' %}
+**In a drain run it is not a production figure and must not be quoted as one.** The queue was
+filled in advance with the workers stopped, so the clock on the first message starts when the
+prefill created it and runs through the whole fill before delivery even begins. What it
+measures here is queue residency under a synthetic backlog. It is comparable between two runs
+filled the same way, and to nothing else.
+{% endif %} Both
+timestamps are Postal's own — the sink counted {{ delivered }} deliveries against
+{{ sent_db }} recorded by Postal and {{ bench_drain_ttd_count | default(0) }} rows used for
+the percentiles. Those three should agree; a gap between the first two means the sink and the
+database were not asked about the same window.
+
+{% if (bench_drain_softfail_other | default(0) | int) > 0 %}
+> **{{ bench_drain_softfail_other }} temporary failures were not caused by any of the caps.**
+> Something else was going wrong at the same time — a resolver timeout, a dropped connection,
+> an internal error — and it is folded into the SoftFail total above. Read the worker log
+> before treating this run as a measurement of throttling.
+{% endif %}
+
+{% if (bench_drain_attempts_by_status | default('')) | length > 0 %}
+| Attempt outcome | Count |
+|---|---|
+{% for pair in bench_drain_attempts_by_status.split(',') | select('!=', '') | sort %}
+| {{ pair.split('=')[0] }} | {{ pair.split('=')[1] }} |
+{% endfor %}
+{% endif %}
+
+{% if (bench_drain_throttled_by_reason | default('')) | length > 0 %}
+#### Which limit was hit
+
+Taken from the receiver's log rather than from the reply Postal recorded: smtpd answers
+`421 ... too many connections` for both the concurrency cap and the connection RATE cap, so
+the reply cannot tell them apart and a breakdown built from it files every rate rejection
+under concurrency.
+
+A run dominated by `Connection_rate` is measuring how often Postal opens a session, not how
+much volume the receiver allows. Postal reuses a session for only 1.4 to 3.35 messages, so a
+connection-rate cap binds well below the message-rate one unless it is set several times
+higher — which is why the `provider` profile sets it high on purpose.
+
+| Limit | Rejections |
+|---|---|
+{% for pair in bench_drain_throttled_by_reason.split(',') | select('!=', '') | sort %}
+| {{ pair.split('=')[0] }} | {{ pair.split('=')[1] }} |
+{% endfor %}
+{% endif %}
+
+{% if (bench_drain_throttled_by_ip | default('')) | length > 0 %}
+#### Refusals per source address
+
+Taken from the receiver's own log, so this is independent of Postal. An address that appears
+here is one whose quota was exhausted; an address that does not is one with headroom left.
+
+| Address | Refusals |
+|---|---|
+{% for pair in bench_drain_throttled_by_ip.split(',') | select('!=', '') | sort %}
+| `{{ pair.split('=')[0] }}` | {{ pair.split('=')[1] }} |
+{% endfor %}
+{% endif %}
+
+{% if (bench_sink_throttled | default(false) | bool) and throttled > 0 and addrs > 0 and drain_span > 0 %}
+#### How many sending addresses the target rate needs
+
+{% set per_ip = delivered / drain_span / addrs %}
+{# The receiver's own allowance per address, per second, from the volume cap. The unit is a
+   Postfix time value: a bare number means seconds, s/m/h are explicit. #}
+{% set unit_raw = postfix_sink_anvil_rate_time_unit | default('60s') | string %}
+{% set unit_n = unit_raw | regex_replace('[^0-9]', '') | int %}
+{% set unit_s = unit_n * (3600 if unit_raw.endswith('h') else (60 if unit_raw.endswith('m') else 1)) %}
+{% set cap_per_ip = ((postfix_sink_client_message_rate_limit | int) / unit_s) if unit_s > 0 else 0 %}
+{% set saturated = cap_per_ip > 0 and per_ip >= (cap_per_ip * 0.8) %}
+{# Two different failures look alike in the per-address rate and need opposite advice, so they
+   are told apart by what the sender was ATTEMPTING. Below the allowance it was simply too
+   slow. Above it, it was pushing harder than permitted and still not using its quota, which
+   is a pacing problem and not a capacity one. #}
+{% set attempts_per_ip = (attempts / drain_span / addrs) if (drain_span > 0 and addrs > 0) else 0 %}
+{% set outpacing = attempts_per_ip >= cap_per_ip %}
+On this run {{ addrs }} address{{ 'es' if addrs > 1 else '' }} delivered
+{{ (delivered / drain_span) | round(1) }} recipients/s in total as counted by the receiver,
+i.e. **{{ per_ip | round(2) }} recipients/s per address**, against an allowance of
+{{ cap_per_ip | round(2) }}/s per address.
+
+{% if saturated %}
+The addresses were at their quota, so throughput here is bounded by the provider rather than
+by Postal, and it scales with the number of addresses rather than with cores. Reaching the
+target of {{ bench_target_rate }} recipients/s therefore needs
+**about {{ ((bench_target_rate | float) / per_ip) | round(0, 'ceil') | int }} sending
+addresses**.
+
+This figure is only as good as the limits it was measured against, and those limits are an
+assumption: nobody has supplied the destination-domain mix or the throttling actually
+observed in production. Read it as the shape of the answer — that capacity is bought in
+addresses, not in cores — and not as a procurement number. It also assumes every destination
+throttles alike, whereas a real mix has a few large providers with hard limits and a long
+tail with looser ones.
+{% else %}
+{% if outpacing %}
+> **No address count is derived from this run, and the reason is worth more than the number
+> would have been.** Each address delivered {{ per_ip | round(2) }} recipients/s against an
+> allowance of {{ cap_per_ip | round(2) }}/s —
+> {{ ((per_ip / cap_per_ip) * 100) | round(0) | int if cap_per_ip > 0 else 0 }} % of what it
+> was permitted — while ATTEMPTING {{ attempts_per_ip | round(1) }}/s per address, that is
+> {{ (attempts_per_ip / cap_per_ip) | round(1) if cap_per_ip > 0 else 0 }} times the
+> allowance. The sender was not too slow. It could not use the quota it had.
+
+That is a mismatch between two clocks, and it is the most transferable finding this run
+produces. The receiver meters volume over {{ unit_raw }}; Postal defers a refused message by
+five minutes and cannot shorten that — the base period is hardcoded. So Postal empties its
+quota for the window in a burst, is refused for the rest of it, and every refused recipient
+leaves the ready pool for five minutes instead of the seconds it would take for the quota to
+roll over. The next window opens with the quota unused and much of the work parked.
+
+The consequence for our own build is concrete: **pacing output to the receiver's rate is worth
+more than raising delivery concurrency.** Concurrency here was already several times the
+allowance and bought nothing. A sender that spread the same volume evenly would approach
+{{ cap_per_ip | round(2) }}/s per address without a single refusal, and the address count for
+the target rate would follow from that instead of from this run.
+{% else %}
+> **No address count is derived from this run: the sender, not the receiver, was the limit.**
+> Each address delivered {{ per_ip | round(2) }} recipients/s against an allowance of
+> {{ cap_per_ip | round(2) }}/s while attempting only {{ attempts_per_ip | round(1) }}/s.
+> Dividing the achieved rate by the address count and extrapolating would answer "how many
+> addresses would this Postal need at this speed", which reads as the provider's limit and is
+> not it. Raise the delivery concurrency until the per-address ATTEMPT rate at least reaches
+> the allowance, then the division means what it appears to.
+{% endif %}
+{% endif %}
+{% elif bench_sink_throttled | default(false) | bool and throttled == 0 %}
+The number of addresses needed for the target rate is not derived here: it is only meaningful
+once the receiver actually refused something. Without refusals the rate reflects Postal's own
+ceiling, and dividing it by the address count would produce a figure that means the opposite
+of what it appears to.
+{% elif bench_sink_throttled | default(false) | bool and addrs == 0 %}
+The number of addresses needed for the target rate is not derived here: the load was spread
+over an unknown number of outbound addresses. IP pools are in use, but no source address could
+be read out of `deliveries.details`, so there is no divisor. Dividing by one instead would
+overstate what a single address delivers by however many the pool holds.
+{% endif %}
+
 {% if not bench_drain_completed %}
+{% if (bench_drain_mode | default('exhaust')) == 'window' %}
+Ready rows were still available when the window closed ({{ bench_drain_ready_left }} left),
+which is what a window run wants: the worker never went idle, so the rate above is the rate
+it sustained rather than an average diluted by an empty queue.
+{% else %}
 > **The ready rows were not exhausted within {{ bench_drain_timeout_s }} s**,
 > {{ bench_drain_ready_left }} left. This is a result, not a failure: draining a queue of this
 > length is slower than the time allotted.
+{% endif %}
 {% endif %}
 {% else %}
 | Accepted | **{{ accepted }}** recipients |
@@ -216,9 +445,19 @@ accepted = (terminal states) + queued
 | In flight | {{ bench_in_flight }} |
 | **Unaccounted for** | **{{ unaccounted }}** ({{ ((unaccounted / accepted * 100) | abs) | round(2) if accepted > 0 else 'n/a' }} %) |
 
-The `Pending` bucket is not part of the identity: it is not a delivery state but exactly the
-messages sitting in the queue, and adding it to the queue remainder would mean
-counting them twice.
+`Pending`, `SoftFail` and `Error` are not part of the terminal side of the identity. None of
+them is a finished delivery: the message still holds its queue row, and adding it to the queue
+remainder as well would count it twice. `SoftFail` and `Error` matter as soon as the receiver
+starts refusing — both go through `retry_later`, which puts the row back with `retry_after` in
+the future. A message never ends its life in `SoftFail`: at the attempt ceiling Postal writes
+`HardFail` and removes the row.
+
+{% if (bench_deferred | default(0) | int) > 0 %}
+Deferred in this run: **{{ bench_deferred }}** recipients awaiting a retry. Postal's ladder is
+`(1.3 ^ attempts) x 5 minutes`, so the first retry is five minutes out and the eighteen
+attempts span roughly 31 hours. None of these recipients could have been delivered inside this
+run, and they are not a defect — they are what a receiver's limits do to a queue.
+{% endif %}
 
 {% if bench_report_kind == 'ingress' %}
 Delivery is not checked in this run: the workers are stopped, and everything accepted
@@ -234,9 +473,17 @@ lines, Postal counts
 {% endif %}
 
 {% if (bench_buckets.Held | default(0) | int) > 0 %}
+{% if bench_sink_throttled | default(false) | bool %}
+> `Held` above zero is expected once the receiver refuses: a message that exhausts its
+> eighteen attempts is hard-failed AND its recipient is added to the suppression list
+> ("too many soft fails"), after which everything else addressed to it is held. It is a
+> consequence of the throttling, not a broken bench — but it does mean the run consumed
+> part of the recipient pool.
+{% else %}
 > `Held` above zero with zero fault injection means a broken
 > bench rather than a slow Postal: either the suppression list fired (two HardFails
 > per address within a day), or send_limit, or the server mode.
+{% endif %}
 {% endif %}
 {% if (silent_removals.stdout | trim | int) > 0 %}
 > **Silent message removal detected**: {{ silent_removals.stdout | trim }} `removing queued message`
@@ -259,17 +506,31 @@ A non-zero value means a message tried to escape to the public internet.
 
 {% if (postfix_sink_response_delay_ms | default(0) | int) > 0 %}
 - The sink answers with an artificial delay of {{ postfix_sink_response_delay_ms }} ms per
-  response, which models the network latency of a real MX. It does not model the rest:
-  per-IP concurrency limits, greylisting, throttling by the recipient provider and
-  temporary rejections are still absent.
+  response, which models the network latency of a real MX.
 {% else %}
-- The sink accepts and discards almost instantly. Real MX hosts hold
-  a connection for hundreds of milliseconds, limit concurrency per IP and return
-  temporary rejections. This is an upper bound, not a forecast — set
-  `postfix_sink_response_delay_ms` to measure closer to production.
+- The sink accepts and discards almost instantly, while a real MX holds a connection for
+  hundreds of milliseconds. Set `postfix_sink_response_delay_ms` to measure closer to
+  production — without it draining was overstated sevenfold once already.
 {% endif %}
-- Retries, deferred delivery and suppression were not exercised: the profile contains
-  100 % successful responses.
+{% if bench_sink_throttled | default(false) | bool %}
+- The receiver's limits are an ASSUMPTION. Nobody has supplied the destination-domain mix or
+  the throttling actually observed in production, so `bench_sink_profiles.{{ bench_sink_profile }}`
+  holds typical values for a large MX. Every number derived from them — above all the count of
+  sending addresses — inherits that status.
+- All destinations throttle identically here. A real mix is a few large providers with hard
+  limits and a long tail with looser ones, and the aggregate ceiling of such a mix is not the
+  ceiling measured against one uniform limit.
+- Greylisting and reputation-based daily quotas are not modelled at all, and neither are
+  permanent rejections: the only failures in this run are the ones the caps produced.
+{% else %}
+- The sink imposes no per-IP limits: unlimited concurrent sessions and unlimited volume from
+  a single address, which no recipient provider allows. Retries, deferred delivery and
+  suppression are therefore not exercised — the profile contains 100 % successful responses.
+  Set `bench_sink_profile=provider` to measure against a receiver that refuses.
+- In particular, the effective delivery concurrency reached here is not attainable from one
+  address in production, and any conclusion about IP pools drawn from this run describes a
+  receiver that does not throttle.
+{% endif %}
 {% if bench_report_kind == 'drain' %}
 - The queue was filled with {{ bench_drain_queue_total_at_start }} rows, and the result
   applies to exactly that length. Transferring it to another length is invalid: both

@@ -34,6 +34,7 @@ postal_api_addr: >-
 postal_smtp_addrs: "{{ groups['postal_smtp'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
 postal_worker_addrs: "{{ groups['postal_workers'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
 postfix_sink_addrs: "{{ groups['postfix_sinks'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
+loadgen_addrs: "{{ groups['load_generators'] | default([]) | map('extract', hostvars, 'svc_ip') | list }}"
 
 # Every outbound address of every worker, flattened. The sink permits relaying by client
 # address (mynetworks), so an address missing from this list connects successfully and is

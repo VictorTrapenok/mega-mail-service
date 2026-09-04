@@ -77,6 +77,24 @@ an identical starting state before every run.
 thanks to silently lost messages is indistinguishable in the report from a genuine optimisation,
 so reconciliation by state buckets is part of every run.
 
+**A limit that is not enforced is worse than no limit at all.** Twice now the sink has been
+configured to throttle and has throttled nothing: once because Postfix exempts `$mynetworks`
+from client limits and every sending address must be in `mynetworks` to relay, once because
+`master.cf` had no `anvil` service, without which those limits are not implemented at all.
+Both fail silently and both produce a run that looks throttled, refuses nothing, and reads as
+"Postal copes with provider limits". So every such knob is proved by exercising it at deploy
+time, from a non-exempt address, the way `postal_sending_ips` proves an address with a real
+`MAIL FROM` rather than a ping. The same rule covers the log greps: their patterns are read
+out of the `smtpd` binary, because a wrong one counts zero forever without ever looking broken.
+
+**Throttling and queue degeneration are the same phenomenon.** A refused message goes back
+into the queue with `retry_after` in the future and keeps its small `id`, which is exactly the
+head-of-table condition that turns the claim query from O(1) into a full scan. So a throttling
+receiver is an honest generator of a degenerate queue, where `bench_prefill_deferred_share`
+is a synthetic one. It also fixes how such an arm must be shaped: Postal's first retry is five
+minutes out, so a throttled run on an empty queue measures the retry ladder rather than the
+receiver, and has to be measured on a prefilled queue instead.
+
 **The auxiliary chain is calibrated before a run.** The Postfix defaults limit
 ingress before Postal tops out, and the slowdown looks like a measurement result for
 Postal.
@@ -102,3 +120,9 @@ Postal.
 | **sustained throughput** | What was delivered over the whole run time, including the drain. The only number that can be extrapolated to a full day; the ingress rate is not suitable for that |
 | **deferred share** | The part of the queue with `retry_after` in the future. Reproduces queue degeneration in production: not-ready rows at the head of the table turn the claim from O(1) into a full scan |
 | **burst mode** | Filling the queue with the generator at maximum speed, without a schedule. Latency in it measures the generator itself and does not feed conclusions |
+| **sink profile** | The policy of the receiving side, an axis independent of the load profile: per-IP limits on concurrent sessions and on volume. `unlimited` is the upper bound for Postal, `provider` models a large MX |
+| **throttled** | The receiver refused a delivery temporarily because a per-IP limit was reached. In Postal this becomes a SoftFail and a deferral, not a loss |
+| **goodput** | Distinct recipients delivered per second. Differs from the delivery rate as soon as anything is retried, and it is the only one of the two that can be extrapolated |
+| **retry amplification** | Delivery attempts divided by recipients delivered. The share of the worker's work spent on messages that were refused |
+| **time to delivery** | From acceptance by Postal to the delivery record. Under throttling it is set by the retry ladder rather than by Postal's speed, and it is what the recipient experiences. Not the same as ingress latency |
+| **per-IP rate** | Recipients per second one outbound address sustains against a throttling receiver. Capacity is bought in addresses, not in cores |
