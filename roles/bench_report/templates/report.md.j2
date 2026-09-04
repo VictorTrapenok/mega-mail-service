@@ -46,7 +46,7 @@ Postal {{ postal_image_ref }}, profile `{{ bench_profile }}`, run class **{{ ben
 | Worker replicas | {{ postal_worker_replicas }} |
 | Threads per worker | {{ postal_worker_threads }} (effective concurrency {{ (postal_worker_replicas | int) * (postal_worker_threads | int) }}) |
 | Main DB connection pool | {{ postal_main_db_pool_size }} |
-| IP pools | {{ ('enabled, ' ~ (postal_sending_ips | default([]) | length) ~ ' outbound addresses') if postal_use_ip_pools else 'disabled' }} |
+| IP pools | {{ ('enabled, ' ~ (postal_sending_ips | default([]) | length) ~ ' outbound addresses') if postal_use_ip_pools | bool else 'disabled' }} |
 | Sink per-IP connection limit | {{ postfix_sink_client_connection_limit | default(0) | int if (postfix_sink_client_connection_limit | default(0) | int) > 0 else 'unlimited' }} |
 | Queue batching | {{ 'enabled' if postal_batch_queued_messages else 'disabled' }} |
 | Worker limits | {{ postal_limits.worker.cpus }} CPU / {{ postal_limits.worker.memory }} |

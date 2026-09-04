@@ -245,3 +245,64 @@ adds work — `allocate_ip_address` per message and a filter on `ip_address_id`.
 production is different: recipient providers cap concurrent sessions per address, so the
 concurrency of 32 measured here is unreachable from a single IP against real MX hosts. The pool
 removes an external limit rather than speeding delivery up.
+
+### IP pools across several addresses of one host
+
+Five extra private addresses per host were assigned in the provider's console; a locally
+invented address is not routed, so the provider must know them first.
+
+- The `postal_sending_ips` role assigns the addresses to the interface, persists them in a
+  netplan drop-in (without it a reboot removes them and the share of the queue bound to them
+  stops being processed, silently), and verifies them. It runs after the sink, because the
+  verification needs something listening on port 25.
+- The inventory lists six outbound addresses with HELO names `mta1`–`mta6`. That single list
+  drives the address assignment, the `ip_addresses` rows and the A records in the DNS zone,
+  so the host and the database cannot drift apart.
+- `postfix_sink_client_connection_limit` caps simultaneous connections per client address.
+  Without it a pool can only look like overhead on the bench: nothing here limits per-source
+  concurrency the way real recipient providers do.
+- The report prints the pool state, the address count, the sink cap, and for drain runs a
+  breakdown of the source addresses the sink actually saw.
+- Both sink-realism knobs moved to `group_vars`: the report runs on the DB host, where a
+  default of the sink role is invisible, and it printed zeros regardless of the real value.
+
+**The first pool run hard-failed 83 % of the messages, and that was a defect in the bench,
+not in Postal.** The pool worked: the messages spread across all six addresses, and exactly
+one sixth — those bound to the primary address — were delivered. The other five connected
+successfully and were then refused at `RCPT TO` with `554 Access denied`, because the sink
+only relays for clients in `mynetworks`, and that list was built from service addresses only.
+`stand_cidr` now includes every worker's outbound addresses.
+
+The verification in the role was the wrong shape and is now fixed: a TCP connect succeeded
+from all six addresses, which is exactly why it missed a protocol-level relay denial. It now
+performs a real `MAIL FROM` / `RCPT TO`. Three distinct failures matter here — an address
+absent from the host, an address the router does not know, and an address the sink will not
+relay for — and only the last one needs an SMTP transaction to detect.
+
+### Measured: what an IP pool costs, and what one address delivers
+
+All at a 75 ms sink response delay, 2 worker replicas x 16 threads, queue ~2.6-2.8k rows,
+1000 destination domains. Connections counted as `disconnect from` lines: Postfix writes
+`client=` per message rather than per connection, and `grep -c 'connect from'` also matches
+`disconnect from`, so both naive counts are wrong.
+
+| Configuration | Rate | Connections / 3000 messages | Messages per session |
+|---|---|---|---|
+| No pool, one address | 50.0/s | 896 | 3.35 |
+| Pool of 6 addresses | 34.1/s | 2114 | 1.42 |
+
+- The pool spreads evenly: 403-480 deliveries per address out of 3000, taken from Postal's own
+  `deliveries.details` rather than from the sink log.
+- **A pool costs about a third of the throughput.** `batchable_messages` filters on
+  `ip_address_id` as well as `batch_key`, so six addresses thin out the batch candidates and
+  sessions become 2.4x more numerous. A pool is a deliverability requirement with a throughput
+  price, not a scaling mechanism.
+- **Per session, one address delivers 1.6-1.9 recipients/s** at this delay. That is the number
+  that matters for a single IP: its capacity is the sessions the recipient permits multiplied
+  by roughly 1.7. On the bench one address reached 50 recipients/s and stopped at our CPU, not
+  at the address.
+- The per-IP connection cap could not be demonstrated: at a cap of 10 there was not one
+  rejection, because the effective simultaneous session count stayed below it — worker threads
+  spend much of their time in the database rather than on the network. Enabling the cap did
+  cost throughput anyway (50.0 to 27.8 without a pool, zero rejections), which points at the
+  single-process anvil being consulted per connection. Single runs; treat the cause as probable.

@@ -44,6 +44,13 @@ corresponds to priority.
   banner, a dropped connection, a TLS refusal, an ambiguous drop after `DATA`.
   Without them the retry, deferred delivery and suppression paths are not exercised
   at all. Take into account that in Postal `553` and `500–504` are SoftFail.
+- **A per-IP cap that actually binds.** The knob exists
+  (`postfix_sink_client_connection_limit`, and `smtpd_client_event_limit_exceptions` had to be
+  narrowed to the loopback or the cap applied to nobody), but at a cap of 10 there was not a
+  single rejection: effective simultaneous sessions stayed below it, because worker threads
+  spend much of their time in the database. Demonstrating the cap needs either a much lower
+  value or real concurrency, and it must be separated from the cost of anvil itself, which is
+  consulted per connection and appeared to cost throughput on its own.
 - **Per-IP concurrency limits on the sink side.** The network latency itself is now
   modelled — `postfix_sink_response_delay_ms` shapes outgoing packets from port 25 with
   tc netem, and it turned out to overstate draining sevenfold when absent. What is still
@@ -71,10 +78,12 @@ corresponds to priority.
   `servers` row per message, i.e. one of the serialisation points.
 - **The MariaDB binlog is disabled**, so disk writes are roughly half those of any
   installation with replication. It is not limiting at present, but it understates the I/O profile.
-- **The delivery concurrency ceiling is 2** (one replica × two threads). At that level
-  no resource is saturated, and "nothing topped out" in the report only means
-  that we topped out at that number. A series across concurrency levels is needed, with
-  observation of row locks and the connection pool.
+- **Effective concurrency is well below the configured one.** A series across concurrency was
+  run (4/8/16/32 giving 7.1/15.1/27.8/51.3 rcpt/s), but at a per-IP cap of 10 there were no
+  rejections at all, which means fewer than ten sessions were actually open at once out of the
+  32 configured. Worker threads spend a large share of their time in the database rather than
+  on the network. How large is unmeasured, and it is the number that decides how many threads
+  are worth configuring.
 
 ### Diagnostics
 
@@ -92,9 +101,11 @@ corresponds to priority.
 
 ### Bench capabilities
 
-- **IP pools as a measured variant.** The mechanics are already accounted for (host networking,
-  address assignment, seeding of pools), but there is no separate arm and no binding
-  checks. Requires several addresses on a machine.
+- **IP pools across several hosts.** Implemented for one host: the `postal_sending_ips` role
+  assigns six addresses, verifies them with a real `MAIL FROM` / `RCPT TO`, and the report
+  shows the delivery breakdown per address. Not covered: a pool spanning several worker hosts
+  (each host may only bind its own addresses, so the queue partitions by host and an idle host
+  cannot help a busy one), priorities other than equal, and address rotation during a run.
 - **Building our own images** from a git ref with a local registry and a tag based on the commit
   SHA — an environment for comparing our own builds.
 - **Sharding across N independent installations** as a control experiment.

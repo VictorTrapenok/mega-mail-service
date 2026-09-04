@@ -15,6 +15,12 @@ postfix_sink_tuning:
   # per client IP, after which the single-process anvil starts answering
   # "450 4.7.1 Error: too many connections" while the cores sit idle.
   smtpd_client_connection_count_limit: "{{ postfix_sink_client_connection_limit }}"
+  # Without this the connection cap above is dead configuration. Postfix exempts
+  # $mynetworks from client event limits by default, and every sending address has to be in
+  # mynetworks to be allowed to relay at all — so the cap applied to nobody. Measured:
+  # with a cap of 10 and 32 concurrent sessions from one address, not a single rejection.
+  # Only the loopback stays exempt now; relay permission is unaffected.
+  smtpd_client_event_limit_exceptions: "127.0.0.0/8"
   smtpd_client_connection_rate_limit: "0"
   smtpd_client_message_rate_limit: "0"
   smtpd_client_recipient_rate_limit: "0"

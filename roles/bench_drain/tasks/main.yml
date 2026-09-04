@@ -20,18 +20,6 @@
   changed_when: false
   register: drain_sink_before
 
-# The sink log is not truncated between runs, so a per-address breakdown taken over the
-# whole file would carry every previous run with it. We remember the length instead and
-# read only the lines the drain itself appended.
-- name: Remember the sink log length before the drain
-  ansible.builtin.command:
-    argv: [bash, -c, "wc -l < {{ postfix_sink_log }}"]
-  delegate_to: "{{ item }}"
-  loop: "{{ groups['postfix_sinks'] }}"
-  run_once: true
-  changed_when: false
-  register: drain_sink_lines_before
-
 - name: Start the workers
   ansible.builtin.include_role:
     name: bench_workers
@@ -111,26 +99,31 @@
   changed_when: false
   register: drain_sink_after
 
-# Proof that the pool actually spreads: which source addresses the sink saw, and how often.
-# A skew, or a single address, means the pool is configured but not in use — the messages
-# were assigned an ip_address_id the worker never matched, or none at all.
-- name: Count the sink connections per source address
-  ansible.builtin.shell:
-    cmd: >-
-      tail -n +{{ (drain_sink_lines_before.results
-                   | selectattr('item', 'equalto', item) | first).stdout | trim | int + 1 }}
-      {{ postfix_sink_log }}
-      | grep -oE 'client=[^ ]*\[[0-9.]+\]'
-      | sed 's/.*\[//; s/\]//'
-      | sort | uniq -c
-      | awk '{print $2"="$1}' | paste -sd, -
-  args:
-    executable: /bin/bash
-  delegate_to: "{{ item }}"
-  loop: "{{ groups['postfix_sinks'] }}"
-  run_once: true
+# Proof that the pool actually spreads: which source address Postal bound for each delivery.
+# Taken from Postal's own delivery records rather than from the sink log, because the log is
+# recreated whenever the sink is redeployed, and a line offset into it silently yields nothing.
+# The message database is recreated by the reset, and the window is pinned anyway, so the
+# selection covers this run only.
+- name: Count the deliveries per source address
+  community.mysql.mysql_query:
+    login_host: "{{ postal_message_db_addr }}"
+    login_port: "{{ mariadb_port }}"
+    login_user: "{{ mariadb_postal_user }}"
+    login_password: "{{ mariadb_postal_password }}"
+    login_db: "{{ postal_seed.message_db_name }}"
+    query: >-
+      SELECT SUBSTRING_INDEX(SUBSTRING_INDEX(details, '(from ', -1), ')', 1) AS ip,
+             COUNT(*) AS n
+        FROM deliveries
+       WHERE status = 'Sent'
+         AND details LIKE '%(from %'
+         AND timestamp >= {{ drain_clock_start.stdout | trim | int }}
+       GROUP BY ip
+       ORDER BY ip
+  register: drain_sources_raw
   changed_when: false
-  register: drain_sink_sources
+  delegate_to: "{{ groups['postal_main_db'] | first }}"
+  run_once: true
 
 - name: Measure the queue remainder
   community.mysql.mysql_query:
@@ -165,6 +158,7 @@
       {{ (drain_sink_after.results | map(attribute='stdout') | map('trim') | map('int') | sum)
          - (drain_sink_before.results | map(attribute='stdout') | map('trim') | map('int') | sum) }}
     bench_drain_sources: >-
-      {{ drain_sink_sources.results | map(attribute='stdout') | map('trim')
-         | select('!=', '') | join(',') }}
+      {{ drain_sources_raw.query_result[0]
+         | map(attribute='ip') | zip(drain_sources_raw.query_result[0] | map(attribute='n'))
+         | map('join', '=') | join(',') }}
   run_once: true

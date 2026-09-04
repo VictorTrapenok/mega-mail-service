@@ -82,7 +82,7 @@ end
 api_cred  = pin_credential(server, "API",  "bench-api",  {{ postal_api_key | to_json }})
 smtp_cred = pin_credential(server, "SMTP", "bench-smtp", {{ postal_smtp_key | to_json }})
 
-{% if postal_use_ip_pools %}
+{% if postal_use_ip_pools | bool %}
 pool = IPPool.find_or_create_by!(name: "bench") { |p| p.default = true }
 OrganizationIPPool.find_or_create_by!(organization_id: org.id, ip_pool_id: pool.id)
 server.update_column(:ip_pool_id, pool.id)

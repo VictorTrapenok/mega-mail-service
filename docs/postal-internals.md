@@ -128,6 +128,36 @@ the rate, and there is no need to budget headroom "for queue degradation". The r
 only if draining stops keeping up and the queue grows to hundreds of thousands of rows —
 behaviour there is unknown.
 
+## IP pools defeat batching
+
+`batchable_messages` filters on `ip_address_id` in addition to `batch_key`, so a batch may
+only contain messages that share both the recipient domain and the outbound address. With
+pools enabled every message is assigned an address at creation time by
+`allocate_ip_address`, and the assignment is a uniform random pick —
+`select_by_priority` is `ORDER BY RAND() * priority`. A pool of N addresses therefore divides
+the batch candidates by roughly N.
+
+Counting this correctly needs care. Postfix writes a `client=` line per **message**, not per
+connection, so counting those says nothing about session reuse — the count simply equals the
+number of messages in every configuration. Connections are `disconnect from` lines, and
+`grep -c 'connect from'` matches `disconnect from` as well, doubling the figure.
+
+Measured properly, without a pool: **896 connections for 3000 messages**, i.e. about 3.35
+messages per SMTP session at 1000 destination domains. Batching does work.
+
+With a six-address pool, same profile: **2114 connections for 3000 messages**, i.e. 1.42
+messages per session. The pool did not destroy batching outright, but it made sessions 2.4
+times more numerous, and throughput fell from 50.0 to 34.1 recipients/s — about a third.
+Fragmentation is milder than the sixfold the address count suggests, because batching was
+already far from its ceiling of 100: at 1000 domains a batch held 3.35 messages to begin with.
+
+This is the pool's real trade-off, and it is the opposite of what one expects: a pool does not
+raise throughput, it lowers it, because every extra session pays again for the TCP handshake,
+EHLO and the MAIL/RCPT/DATA round trips. Its purpose is external — recipient providers cap
+concurrent sessions per source address, and a pool is what makes a high aggregate concurrency
+permissible at all. Budget it as a deliverability requirement with a throughput cost, not as a
+scaling mechanism.
+
 Domain cardinality, meanwhile, remains significant regardless of queue length:
 sending to a single domain gives an almost hundredfold win on batching, and the
 `wide_domains` profile exists precisely to remove that win.
