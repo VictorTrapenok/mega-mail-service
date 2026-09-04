@@ -21,6 +21,11 @@ The image is built on `ruby:3.4.6-slim-bookworm`, Rails 7.1.6, Puma. Only
 
 ## What to read when debugging
 
+The paths below are relative to the Postal source, which is now in this repository:
+[vendor/postal/](../vendor/postal/), forked at tag 3.3.7. So they are also the files to
+edit — anything changed there is in the next run's image
+(see [custom-builds.md](custom-builds.md)).
+
 | Question | File |
 |---|---|
 | How the worker selects messages | `app/lib/worker/jobs/process_queued_messages_job.rb` |

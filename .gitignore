@@ -2,9 +2,18 @@
 .ansible_facts/
 *.retry
 
-# Run artifacts: reports are committed, raw CSV files are not.
-reports/**/raw/
-reports/**/*.csv.gz
+# Run artifacts.
+#
+# A report is small text and worth keeping; the CSV samples and generator summaries that
+# accompany it are neither. And a report is only worth committing when it is a REFERENCE
+# point rather than one of many iterations — a repository holding thirty runs with numbers
+# that contradict each other tells a reader nothing.
+#
+# So the directory is ignored wholesale and the reference runs live in reports/reference/
+# under names that say what they are. Everything a run produces still lands on disk.
+reports/*
+!reports/reference/
+!reports/README.md
 
 # Collections installed locally
 collections/
@@ -20,4 +29,3 @@ dumps/
 __pycache__/
 *.pyc
 .venv/
-reports/*

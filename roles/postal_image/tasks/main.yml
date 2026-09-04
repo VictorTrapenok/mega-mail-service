@@ -1,52 +1,31 @@
 ---
-# Resolving the Postal image reference to an immutable digest.
+# Deciding WHICH Postal image the bench deploys.
 #
-# A tag is not good enough for this: latest and stable on ghcr.io are moving pointers
-# with different digests, and floating tags 3 and 3.3 do not exist. A baseline
-# pinned by a tag can change between the first and the last run of a series,
-# and the whole series then compares different images.
+# There are two sources and they answer different questions:
+#
+#   upstream — the official image from ghcr.io, resolved to an immutable digest.
+#              This is the baseline: a number obtained on it is comparable with
+#              the reference runs in reports/reference/.
+#   local    — an image built here from the fork in vendor/postal. This is the
+#              candidate: an index added to db/schema.rb or an edited worker
+#              only reaches a run through this path.
+#
+# Whichever branch runs, it must end with postal_image_resolved set: the compose
+# template, the report and the measurement playbooks all read that single fact
+# and know nothing about where the image came from.
 
-- name: Reject moving and incomplete tags
+- name: Reject an unknown image source
   ansible.builtin.assert:
     that:
-      - postal_image_ref is not match('^(' + (postal_image_forbidden_refs | map('regex_replace', '\*', '.*') | join('|')) + ')$')
+      - postal_image_source in ['upstream', 'local']
     fail_msg: >-
-      The tag "{{ postal_image_ref }}" is forbidden for measurement runs.
-      latest and stable move, and ci-* is built with --target ci without asset
-      precompilation: web returns 500 while still looking "alive" to a connection check.
-      Specify a version or a digest.
+      postal_image_source is "{{ postal_image_source }}", and the only values are
+      "upstream" (the official ghcr.io image) and "local" (built from vendor/postal).
 
-- name: Determine whether a digest is already given
-  ansible.builtin.set_fact:
-    postal_image_is_digest: "{{ postal_image_ref is match('^sha256:[0-9a-f]{64}$') }}"
+- name: Resolve the official image
+  ansible.builtin.include_tasks: upstream.yml
+  when: postal_image_source == 'upstream'
 
-- name: Resolve the tag into the image index digest
-  ansible.builtin.command:
-    argv:
-      - docker
-      - buildx
-      - imagetools
-      - inspect
-      - "--format"
-      - "{{ '{{' }}.Manifest.Digest{{ '}}' }}"
-      - "{{ postal_image_repo }}:{{ postal_image_ref }}"
-  register: postal_image_digest_lookup
-  changed_when: false
-  when: not postal_image_is_digest
-
-- name: Pin the immutable image reference
-  ansible.builtin.set_fact:
-    postal_image_resolved: >-
-      {{ postal_image_repo }}@{{
-        postal_image_ref if postal_image_is_digest
-        else postal_image_digest_lookup.stdout | trim
-      }}
-    cacheable: true
-
-- name: Pull the image
-  community.docker.docker_image_pull:
-    name: "{{ postal_image_resolved }}"
-
-- name: Show which image will be deployed
-  ansible.builtin.debug:
-    msg: "Postal: {{ postal_image_resolved }} (from the reference \"{{ postal_image_ref }}\")"
+- name: Build the image from the vendored fork
+  ansible.builtin.include_tasks: local.yml
+  when: postal_image_source == 'local'

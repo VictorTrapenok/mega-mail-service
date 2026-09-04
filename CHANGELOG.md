@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## 2026-09-04
+
+### Our own build of Postal
+
+- Postal 3.3.7 forked into `vendor/postal/` (upstream commit `d038eaa`), edited in this
+  working tree — no submodule, no second remote.
+- `postal_image` split into two paths behind `postal_image_source`: `upstream` resolves the
+  official ghcr.io image to a digest as before, `local` (the new default) builds the fork.
+- The local image is tagged by a SHA-256 of a deterministic archive of the source, so the
+  tag changes if and only if the code does. An unchanged tree resolves to an image that
+  already exists and the build is skipped.
+- `playbooks/build.yml`: build, deploy, migrate the schema, then assert that the running
+  worker carries the source digest of the working tree. Imported by `benchmark.yml`,
+  `ingress.yml` and `drain.yml` before the reset, so a run always measures the current
+  source (`postal_build_before_run=false` to skip).
+- The report names the build in its headline and prints the source digest as built and as
+  read back off the running container, with a warning row when the two disagree or the
+  label is absent.
+- `docs/custom-builds.md`: the edit-and-measure loop, adding an index as a migration,
+  refreshing the fork from upstream, and what this setup does not do.
+
 ## 2026-09-03
 
 ### Requirements revision
@@ -432,30 +453,41 @@ attempt at 15 000 ran dry inside the window and understated goodput by a third (
 13.0). The report now detects that and says so; the numbers below are from 25 000, where the
 pool never emptied.
 
+The numbers below are the two runs kept in [reports/reference/](reports/reference/), so this
+table and those reports cannot drift apart. Earlier iterations of the same pair gave 47.0 and
+13.0; the spread between repeats has not been measured, so treat differences of that size as
+noise rather than as results.
+
 | | Baseline (`unlimited`) | Provider limits |
 |---|---|---|
-| Queue at start | 14 350 | 24 495 |
-| Delivery attempts per second | 47.4 | 69.0 |
-| **Goodput, recipients/s** | **47.0** | **13.0** |
-| Retry amplification | 1.00 | 5.32 |
-| Refusals recorded by the receiver | 0 | 17 023 |
+| Queue at start | 14 455 | 24 557 |
+| Delivery attempts per second | 46.3 | 68.5 |
+| **Goodput, recipients/s** | **46.3** | **13.3** |
+| Retry amplification | 1.00 | 5.17 |
+| Refusals recorded by the receiver | 0 | 16 900 |
 | Reconciliation discrepancy | 0 % | 0 % |
 
 **Postal worked HARDER under the cap and delivered a quarter as much.** The attempt rate rose
-from 47 to 69 per second because a refusal is cheaper than a delivery — `450` arrives at
+from 46 to 69 per second because a refusal is cheaper than a delivery — `450` arrives at
 `MAIL FROM` and the message body is never transferred — so the worker cycles faster while
-5.32 attempts are spent per recipient that lands. None of that is visible in the drain rate,
+5.17 attempts are spent per recipient that lands. None of that is visible in the drain rate,
 which counts only what arrived, and that gap is the reason this arm exists.
 
-Which limit bound: message rate 17 085 rejections, concurrency 9, connection rate 0. The
+Which limit bound: message rate 16 921 rejections, concurrency 8, connection rate 0. The
 volume cap dominates as intended; the concurrency cap still cannot bind at this delivery
 concurrency, consistent with every earlier run.
 
-**The addresses reached their quota: 2.08 recipients/s each against an allowance of 2.0.**
+**The addresses reached their quota: 2.06 recipients/s each against an allowance of 2.0.**
 That is what makes the extrapolation legitimate, and the report only prints it in that case —
-**about 28 sending addresses for the target of 58 recipients/s**, i.e. 5M per day. The limits
+**about 29 sending addresses for the target of 58 recipients/s**, i.e. 5M per day. The limits
 it rests on are an assumption, and the figure inherits that: read it as the shape of the
 answer — capacity is bought in addresses, not in cores — rather than as a procurement number.
+
+The reference run also caught nine recipients delivered twice out of 4310. The worker
+containers have distinct hostnames, so this is not a broken deployment but at-least-once
+delivery: the receiver took the message and the acknowledgement did not get back, so Postal
+recorded a failure and retried. Postal carries no delivery-attempt identifier that would let a
+receiver drop the second copy, and the more a receiver refuses, the more of this there is.
 
 The earlier, understated run is still instructive: at 15 000 prefilled the addresses reached
 only 65 % of their allowance while attempting four times it, because the receiver meters over

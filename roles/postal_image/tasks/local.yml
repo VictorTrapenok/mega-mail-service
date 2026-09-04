@@ -1,0 +1,182 @@
+---
+# Building the Postal image from the fork vendored in vendor/postal.
+#
+# The tag is derived from the CONTENT of the source tree, not from a version string.
+# Two reasons, and both matter more here than tidiness:
+#
+#   A hand-maintained tag lies the moment someone forgets to bump it. The whole point of
+#   this path is to run an EDITED worker or an added index, and an image tagged "dev"
+#   cannot tell anyone whether the edit is inside it. A content digest can.
+#
+#   It also makes the build free when nothing changed: the tag already exists, the build
+#   is skipped, and that is what allows every measurement playbook to ask for a build
+#   unconditionally before the run without paying for it.
+#
+# The digest is computed on the CONTROLLER from a deterministic archive — names sorted,
+# mtime/owner zeroed, pax time headers stripped — so touching a file does not change it
+# while editing one does. That archive is then the thing shipped to the host, so the
+# digest describes exactly the bytes that were built and not a similar tree.
+
+- name: Make sure the fork has been vendored
+  ansible.builtin.stat:
+    path: "{{ postal_build_source_dir }}/Dockerfile"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: postal_build_dockerfile
+
+- name: Fail when there is nothing to build
+  ansible.builtin.assert:
+    that:
+      - postal_build_dockerfile.stat.exists
+    fail_msg: >-
+      {{ postal_build_source_dir }}/Dockerfile is missing, so there is no source to build.
+      Restore the fork (see docs/custom-builds.md) or deploy the official image with
+      -e postal_image_source=upstream.
+
+- name: Create a temporary file for the source archive
+  ansible.builtin.tempfile:
+    state: file
+    suffix: .tar
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: postal_build_archive
+
+# --sort=name and the zeroed metadata are what make the digest a function of the CONTENT.
+# Without them a fresh checkout, or merely an editor saving a file, would produce a new
+# digest, a new tag and a full rebuild before every run.
+- name: Pack the source deterministically
+  ansible.builtin.shell:
+    cmd: >-
+      tar --sort=name --format=posix
+      --pax-option='exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime,delete=mtime'
+      --mtime='@0' --owner=0 --group=0 --numeric-owner
+      -cf {{ postal_build_archive.path | quote }}
+      -C {{ postal_build_source_dir | dirname | quote }}
+      {{ postal_build_source_dir | basename | quote }}
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Compute the content digest of the source
+  ansible.builtin.stat:
+    path: "{{ postal_build_archive.path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: postal_build_archive_stat
+
+- name: Pin the build identity
+  ansible.builtin.set_fact:
+    postal_build_source_digest: "{{ postal_build_archive_stat.stat.checksum }}"
+    postal_image_resolved: >-
+      {{ postal_build_image_repo }}:src-{{ postal_build_archive_stat.stat.checksum[:12] }}
+    cacheable: true
+
+- name: Look for an image already built from exactly this source
+  ansible.builtin.command:
+    argv:
+      - docker
+      - image
+      - inspect
+      - "--format"
+      - "{% raw %}{{.Id}}{% endraw %}"
+      - "{{ postal_image_resolved }}"
+  register: postal_build_existing
+  failed_when: false
+  changed_when: false
+
+- name: Decide whether a build is needed
+  ansible.builtin.set_fact:
+    postal_build_needed: "{{ postal_build_force | bool or postal_build_existing.rc != 0 }}"
+
+# Wiped rather than overwritten: unarchive adds and replaces files but never removes them,
+# so a file deleted from the fork would survive in the context and go on being built in.
+- name: Reset the build context directory
+  ansible.builtin.file:
+    path: "{{ postal_build_dir }}"
+    state: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [absent, directory]
+  when: postal_build_needed | bool
+
+- name: Unpack the source on the build host
+  ansible.builtin.unarchive:
+    src: "{{ postal_build_archive.path }}"
+    dest: "{{ postal_build_dir }}"
+    owner: root
+    group: root
+  when: postal_build_needed | bool
+
+- name: Build the Postal image
+  ansible.builtin.command:
+    argv:
+      - docker
+      - build
+      # The default target is `full` and it is named anyway. `ci` skips asset
+      # precompilation, and production.rb has config.assets.compile = false, so web then
+      # returns 500 on every page while a TCP health check still reports it alive. That is
+      # the same trap postal_image_forbidden_refs exists for on the upstream path.
+      - "--target"
+      - full
+      # Kept false by default: the base image tag ruby:3.4.6-slim-bookworm moves, and
+      # re-pulling it mid-series would change the build under a series that is supposed to
+      # differ only in our own source.
+      - "--pull={{ postal_build_pull | lower }}"
+      - "--build-arg"
+      - "VERSION={{ postal_build_upstream_ref }}"
+      - "--build-arg"
+      - "BRANCH=bench-{{ postal_build_source_digest[:12] }}"
+      # Baked in so the report can read the source identity off the RUNNING container
+      # rather than trust the tag it was asked to deploy. A tag is what someone meant to
+      # run; a label on the running image is what actually ran.
+      - "--label"
+      - "bench.source.sha256={{ postal_build_source_digest }}"
+      - "--label"
+      - "bench.upstream.ref={{ postal_build_upstream_ref }}"
+      - "--label"
+      - "bench.upstream.commit={{ postal_build_upstream_commit }}"
+      - "--tag"
+      - "{{ postal_image_resolved }}"
+      - "{{ postal_build_dir }}/{{ postal_build_source_dir | basename }}"
+  when: postal_build_needed | bool
+  changed_when: true
+
+- name: Remove the temporary source archive
+  ansible.builtin.file:
+    path: "{{ postal_build_archive.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Read the identity of the image that will be deployed
+  ansible.builtin.command:
+    argv:
+      - docker
+      - image
+      - inspect
+      - "--format"
+      - "{% raw %}{{.Id}}{% endraw %}"
+      - "{{ postal_image_resolved }}"
+  register: postal_build_id
+  changed_when: false
+
+- name: Pin the built image identity
+  ansible.builtin.set_fact:
+    postal_build_image_id: "{{ postal_build_id.stdout | trim }}"
+    cacheable: true
+
+- name: Show which image will be deployed
+  ansible.builtin.debug:
+    msg: >-
+      Postal: {{ postal_image_resolved }} ({{ postal_build_image_id }}),
+      built from vendor/postal, fork of {{ postal_build_upstream_ref }}
+      {{ '(rebuilt now)' if postal_build_needed | bool else '(already built from this source)' }}

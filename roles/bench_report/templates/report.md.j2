@@ -19,7 +19,9 @@
 {% set drain_rate = ((bench_drain_delivered | int) / drain_span) if drain_span > 0 else 0 %}
 # Run {{ bench_run_id }}
 
-Postal {{ postal_image_ref }}, profile `{{ bench_profile }}`, run class **{{ bench_run_class }}**, kind **{{ bench_report_kind }}**.
+{# The headline must name the BUILD, not just the version: a fork of 3.3.7 with an added
+   index is still "3.3.7" and would otherwise be indistinguishable from the baseline here. #}
+Postal {% if postal_image_source == 'local' %}{{ postal_build_upstream_ref }} fork, source `{{ (postal_build_source_digest | default('unknown') | trim)[:12] }}`{% else %}{{ postal_image_ref }} (official image){% endif %}, profile `{{ bench_profile }}`, run class **{{ bench_run_class }}**, kind **{{ bench_report_kind }}**.
 
 {% if bench_report_kind == 'ingress' %}
 > **Ingress only** was measured: the delivery workers were stopped for the whole run,
@@ -41,7 +43,21 @@ Postal {{ postal_image_ref }}, profile `{{ bench_profile }}`, run class **{{ ben
 |---|---|
 | Postal image (requested) | `{{ postal_image_resolved }}` |
 | Postal image (actually running) | `{{ running_image.stdout | trim }}` |
+| Image source | `{{ postal_image_source }}` — {{ 'built from the fork in vendor/postal' if postal_image_source == 'local' else 'the official ghcr.io image' }} |
+{% if postal_image_source == 'local' %}
+{% set src_built = postal_build_source_digest | default('') | trim %}
+{% set src_running = running_source_digest.stdout | default('') | trim %}
+| Fork base | `{{ postal_build_upstream_ref }}` ({{ postal_build_upstream_commit[:12] }}) |
+| Source digest (built) | `{{ src_built if src_built else 'undetermined: the fact cache is empty' }}` |
+| Source digest (running) | `{{ src_running if src_running else 'absent — the running image carries no bench label' }}` |
+{% if not src_running %}
+| | **The running image was not built by this bench.** The tag it was deployed under may say otherwise; the label does not lie. Treat this run as measuring an unknown build. |
+{% elif src_built and src_running != src_built %}
+| | **The worker is running source `{{ src_running[:12] }}` while the working tree hashes to `{{ src_built[:12] }}`.** The container was not recreated with the new image, so this run measures the previous build, not the edit. |
+{% endif %}
+{% else %}
 | Image reference | `{{ postal_image_ref }}` |
+{% endif %}
 | MariaDB image | `{{ mariadb_image_ref }}` |
 | Worker replicas | {{ postal_worker_replicas }} |
 | Threads per worker | {{ postal_worker_threads }} (effective concurrency {{ (postal_worker_replicas | int) * (postal_worker_threads | int) }}) |
@@ -159,8 +175,15 @@ by a time during which it could not have been done.
 {% if unique > 0 and accepted_all != unique %}
 > **Over the whole run the sink accepted {{ accepted_all }} messages but only {{ unique }}
 > distinct recipients, a difference of {{ accepted_all - unique }}.** The same addressee was
-> delivered more than once. The usual cause is two worker containers sharing a hostname and
-> picking up each other's batches. Throughput above is overstated by that proportion.
+> delivered more than once, so throughput above is overstated by that proportion.
+>
+> Two causes produce this and they are told apart by the size of the difference. A large one
+> means two worker containers share a hostname and are picking up each other's batches, which
+> is a broken deployment. A handful means delivery is at-least-once: the receiver accepted the
+> message but the acknowledgement never got back — a reset or a timeout after `DATA` — so
+> Postal recorded a failure and tried again. Postal has no delivery-attempt identifier that
+> would let a receiver discard the second copy, so this is inherent rather than a defect, and
+> it gets more likely the more the receiver refuses.
 {% endif %}
 
 {% if bench_drain_sources | default('') | length > 0 %}

@@ -10,6 +10,7 @@ there are only links and general principles.
 | [postal-benchmark-ansible-task.md](postal-benchmark-ansible-task.md) | Bench requirements and acceptance criteria |
 | [POSTAL_OPTIMIZATION_GUIDE.md](POSTAL_OPTIMIZATION_GUIDE.md) | Measurement methodology and the optimisation sequence |
 | [docs/postal-internals.md](docs/postal-internals.md) | Confirmed Postal 3.3.7 internals with paths into the sources |
+| [docs/custom-builds.md](docs/custom-builds.md) | The Postal fork in `vendor/postal/`, how it is built and how a run proves which build it measured |
 | [README.md](README.md) | Commands for running things |
 | [roadmap.md](roadmap.md) | What has been deferred and why |
 
@@ -33,7 +34,9 @@ The roles are grouped by purpose:
 
 - **Host preparation** — `common`, `docker_host`, `containment`.
 - **Infrastructure** — `test_dns`, `mariadb`.
-- **System under test** — `postal_image`, `postal_app`, `postal_schema`, `postal_seed`.
+- **System under test** — `postal_image` (resolves the official image OR builds ours from
+  `vendor/postal/`, depending on `postal_image_source`), `postal_app`, `postal_schema`,
+  `postal_seed`.
 - **Measurement environment** — `postfix_sink`, `loadgen`, `bench_samplers`,
   `bench_report`, `bench_reset`.
 - **Measurements** — `bench_run` (ingress and draining together), `bench_ingress` (ingress
@@ -77,6 +80,15 @@ an identical starting state before every run.
 thanks to silently lost messages is indistinguishable in the report from a genuine optimisation,
 so reconciliation by state buckets is part of every run.
 
+**A run must prove which build produced it.** The candidate is built from the fork in
+`vendor/postal/` and tagged by a digest of that source, so the tag cannot fall behind the
+code. That digest is also baked into the image as a label and read back off the *running*
+container, both by `build.yml` before the run and by the report after it. The reason is that
+the alternative failures — a compose file that did not change, a container that was not
+recreated, a tag pointing at an older layer — all produce a run that completes normally,
+reconciles cleanly and measures the previous build. Nothing in the numbers reveals it.
+Details in [docs/custom-builds.md](docs/custom-builds.md).
+
 **A limit that is not enforced is worse than no limit at all.** Twice now the sink has been
 configured to throttle and has throttled nothing: once because Postfix exempts `$mynetworks`
 from client limits and every sending address must be in `mynetworks` to relay, once because
@@ -112,6 +124,9 @@ Postal.
 | **held** | The message is held: the suppression list, `send_limit`, the server mode or its suspension |
 | **in_flight** | A queue row has been claimed by a worker (`locked_at` is not empty) but is not yet finished |
 | **run_class** | `debug` — the components share hardware, unsuitable for comparing builds; `scored` — they are split apart |
+| **baseline** | The official Postal image from ghcr.io, pinned to a digest. `postal_image_source=upstream` |
+| **candidate** | Our own build, compiled from the fork in `vendor/postal/`. The default, `postal_image_source=local` |
+| **source digest** | SHA-256 over a deterministic archive of `vendor/postal/`. It names the image tag, is baked into the image as a label, and is read back off the running container so a run can prove which code produced its numbers |
 | **noise floor** | The spread between repeats of the same build. A gain smaller than it must not be declared a win |
 | **sink** | The mail sink: Postfix that accepts over SMTP in the normal way and discards via `discard` |
 | **open model** | The generator keeps its sending schedule regardless of the system's response. A closed one understates the latency tail |

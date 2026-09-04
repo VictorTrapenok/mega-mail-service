@@ -123,8 +123,27 @@ corresponds to priority.
   shows the delivery breakdown per address. Not covered: a pool spanning several worker hosts
   (each host may only bind its own addresses, so the queue partitions by host and an idle host
   cannot help a busy one), priorities other than equal, and address rotation during a run.
-- **Building our own images** from a git ref with a local registry and a tag based on the commit
-  SHA — an environment for comparing our own builds.
+- **Building our own images** — done for a single machine: the fork lives in `vendor/postal/`,
+  `postal_image` builds it, the tag is a digest of the source and the running container is
+  checked against it (see [docs/custom-builds.md](docs/custom-builds.md)). What remains:
+  - **A local registry.** Every Postal host currently builds from the same archive on its
+    own. Both inventories place all Postal groups on one machine, so nothing is broken yet,
+    but with the workers spread over several hosts the builds could drift apart: the base
+    tag `ruby:3.4.6-slim-bookworm` moves and the build is not bit-reproducible. Build once,
+    push, pull — and only then can a multi-host run claim the hosts ran the same code.
+  - **Pinning the base image by digest.** `postal_build_pull` is off so a series is not
+    rebased mid-flight, but the first build on a fresh host takes whatever the tag pointed
+    at that day. The Dockerfile has to carry a digest, and that is an edit to the fork.
+  - **`local` with no edits measured against `upstream`.** They are the same source on
+    possibly different base layers. Until that pair has been run, every gain measured on a
+    local build carries an unmeasured build-environment term. This is the first run to do.
+  - **Committing a build to a report.** The report records the source digest but nothing
+    ties it to a git commit of this repository, so a reference run cannot be reproduced
+    from the report alone. `git describe` plus a dirty flag, recorded next to the digest.
+- **A campaign over builds, not just over repeats.** The `campaign.yml` wanted under
+  "Measurements" alternates repeats of one build; what the fork now makes possible is
+  alternating `upstream → local → upstream` and reporting the difference against the noise
+  floor, which is the only form in which an optimisation may be declared to work.
 - **Sharding across N independent installations** as a control experiment.
   Both confirmed serialisation points — the global `statistics` row
   and the shared queue — sit at the installation level, so this may

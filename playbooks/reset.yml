@@ -7,6 +7,27 @@
   gather_facts: true
   tasks: []
 
+# postal_seed is produced by the seeding and survives between playbook runs only in the
+# fact cache, which expires (fact_caching_timeout in ansible.cfg). Once it has, every
+# playbook that needs the message database name dies inside a Jinja expression with
+# "'HostVarsVars object' has no attribute 'postal_seed'", which says nothing about the
+# cause and nothing about the remedy. Checking for it here costs one task and turns a
+# cryptic failure hours into the run into one line naming the playbook to run.
+- name: Check that the seeding results are available
+  hosts: postal_admin
+  gather_facts: false
+  tasks:
+    - name: Make sure the seeding facts are in the cache
+      ansible.builtin.assert:
+        that:
+          - postal_seed is defined
+          - postal_seed.message_db_name is defined
+        fail_msg: >-
+          The seeding results are not in the fact cache — it has expired or was cleared.
+          Run "ansible-playbook -i <inventory> playbooks/seed.yml" and repeat this run.
+          The seeding is idempotent, so it is safe to run at any time.
+        success_msg: "Seeding facts present, message database {{ postal_seed.message_db_name }}."
+
 - name: Reset state
   hosts: postal_main_db
   become: true

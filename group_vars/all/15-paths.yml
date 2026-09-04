@@ -10,6 +10,10 @@
 # --- Postal ---------------------------------------------------------------
 postal_dir: /opt/postal-bench/postal
 postal_config_dir: /opt/postal-bench/postal/config
+# Docker build context for the fork in vendor/postal. Wiped and refilled on every build:
+# unarchive replaces files but never removes them, so a file deleted from the fork would
+# otherwise survive here and go on being built in.
+postal_build_dir: /opt/postal-bench/build
 
 # --- MariaDB --------------------------------------------------------------
 mariadb_dir: /opt/postal-bench/mariadb

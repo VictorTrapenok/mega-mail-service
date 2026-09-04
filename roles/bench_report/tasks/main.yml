@@ -118,6 +118,23 @@
   register: running_image
   changed_when: false
 
+# A locally built image is tagged by the digest of its own source, so the tag above
+# already identifies the code. This reads the same digest back out of a LABEL on the
+# running container, which is the only value that cannot be produced by a stale tag,
+# a compose file that did not change or a container that did not get recreated.
+# Empty output means the running image was not built by this bench.
+- name: Read the source digest baked into the running Postal image
+  ansible.builtin.shell:
+    cmd: >-
+      docker inspect
+      --format '{% raw %}{{index .Config.Labels "bench.source.sha256"}}{% endraw %}'
+      $(docker compose -f {{ postal_dir }}/docker-compose.yml ps -q worker1) 2>/dev/null || echo ''
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ groups['postal_workers'] | first }}"
+  register: running_source_digest
+  changed_when: false
+
 # The pool state decides how the per-address figures are read, so it is taken from the running
 # container rather than from group_vars. They disagreed on the first throttled run: the report
 # said pools were disabled while six outbound addresses were plainly at work in the refusal

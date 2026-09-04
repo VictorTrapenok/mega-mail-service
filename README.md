@@ -9,6 +9,24 @@ the methodology and optimisation plan in [POSTAL_OPTIMIZATION_GUIDE.md](POSTAL_O
 and the confirmed Postal internals with paths into the sources in
 [docs/postal-internals.md](docs/postal-internals.md).
 
+## What it has found so far
+
+**[RESULTS.md](RESULTS.md) is the short version** — the findings, the numbers behind them, and
+an explicit list of what has not been established. Reference runs are in
+[reports/reference/](reports/reference/).
+
+In one paragraph: on a 2 vCPU machine the stock Postal 3.3.7 image delivered 47-51 recipients
+per second — 4.1-4.4 million per day — with the reconciliation closing exactly. What binds is
+not Postal but the receiving side: under per-IP volume limits the same build on the same
+hardware delivered a quarter as much while making *more* delivery attempts, because five of
+every six were refused. Throughput then scales with the number of sending addresses rather
+than with cores, and an IP pool turns out to cost throughput rather than add it — Postal binds
+the outbound address to a message when the message is accepted, and batching requires a match
+on that address as well as on the recipient domain.
+
+Every run states its own limits in a "what this run does not prove" section, and the
+reconciliation identity has to close within 1 % or the run is not reported as a result.
+
 ## Requirements
 
 - Control machine: `ansible-core >= 2.17`, Python 3.10+.
@@ -36,6 +54,10 @@ Thanks to this, one layout works both on a single machine and on several.
 
 ## Commands
 
+> The measurement playbooks need the seeding results, which live in the Ansible fact cache and
+> expire (`fact_caching_timeout` in `ansible.cfg`). If a run stops on "the seeding results are
+> not in the fact cache", run `playbooks/seed.yml` and repeat — the seeding is idempotent.
+
 Debug environment on a single machine:
 
 ```bash
@@ -55,11 +77,44 @@ ansible-playbook -i inventories/distributed playbooks/reset.yml
 
 The report appears in `reports/<run_id>.md`.
 
-Changing the target rate or the build:
+### Which build is measured
+
+By default a run tests **our own build**, compiled from the Postal fork vendored in
+[vendor/postal/](vendor/postal/). Every measurement playbook builds the image before
+resetting state, so the run always measures the source currently in the working tree:
+
+```bash
+$EDITOR vendor/postal/app/lib/worker/jobs/process_queued_messages_job.rb
+ansible-playbook -i inventories/distributed playbooks/benchmark.yml
+```
+
+The build is skipped when nothing was edited — the image is tagged by a digest of the
+source, so an unchanged tree resolves to an image that already exists. The report prints
+that digest twice, once as built and once as read back off the running container, which is
+what proves the run measured the edit rather than the previous build.
+
+Switching to the official image for a baseline, and other build controls:
+
+```bash
+# the official ghcr.io image instead of the fork
+ansible-playbook -i inventories/distributed playbooks/benchmark.yml \
+  -e postal_image_source=upstream -e postal_image_ref=3.3.7
+
+# build and deploy without measuring anything
+ansible-playbook -i inventories/distributed playbooks/build.yml
+
+# rebuild even though the source is unchanged
+ansible-playbook -i inventories/distributed playbooks/build.yml -e postal_build_force=true
+```
+
+Details, including how to add an index as a migration and how to refresh the fork from
+upstream, are in [docs/custom-builds.md](docs/custom-builds.md).
+
+Changing the target rate:
 
 ```bash
 ansible-playbook -i inventories/distributed playbooks/benchmark.yml \
-  -e bench_target_rate=120 -e postal_image_ref=3.3.7
+  -e bench_target_rate=120
 ```
 
 ### Separate measurements

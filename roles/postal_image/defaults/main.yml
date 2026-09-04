@@ -1,0 +1,14 @@
+---
+# Where the fork lives on the CONTROLLER. Every playbook of this project sits in
+# playbooks/, so the repository root is one level up from playbook_dir.
+postal_build_source_dir: "{{ playbook_dir }}/../vendor/postal"
+
+# Rebuild even when an image built from exactly this source already exists.
+# Needed after changing the Dockerfile's base image or after clearing the layer cache;
+# not needed to pick up source edits, which change the tag by themselves.
+postal_build_force: false
+
+# Re-pull the base image before building. Off by default: ruby:3.4.6-slim-bookworm is a
+# moving tag, and a series that is supposed to differ only in our source must not have its
+# base changed underneath it.
+postal_build_pull: false

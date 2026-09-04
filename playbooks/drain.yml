@@ -31,6 +31,16 @@
         bench_run_id: >-
           {{ lookup('env', 'BENCH_RUN_ID') | default('drain-' ~ (run_clock.stdout | trim), true) }}
 
+# Before reset.yml, not after: deploying a new image recreates the containers, and a
+# worker coming back up starts draining whatever is still in the queue. Resetting
+# afterwards is what guarantees the run starts from the same state as every other.
+#
+# It costs nothing when vendor/postal is unchanged — the image built from that source
+# already exists and neither the build nor the redeploy does any work.
+- name: Build and deploy the image under test
+  ansible.builtin.import_playbook: build.yml
+  when: postal_build_before_run | bool
+
 - name: Prepare the state before the run
   ansible.builtin.import_playbook: reset.yml
 
@@ -72,6 +82,11 @@
     postal_image_resolved: >-
       {{ hostvars[groups['postal_workers'] | first].postal_image_resolved
          | default('undetermined: the fact cache is empty, see the actually running image', true) }}
+    # Empty rather than a placeholder: the report treats an empty value as "this run did
+    # not build from the fork" and prints the row accordingly.
+    postal_build_source_digest: >-
+      {{ hostvars[groups['postal_workers'] | first].postal_build_source_digest
+         | default('', true) }}
     # The reconciliation window covers the prefill as well: the messages are created there, not
     # during the drain, so a selection based on the drain time alone would find
     # no rows in messages at all.

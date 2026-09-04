@@ -1,0 +1,69 @@
+---
+# Building the image under test and putting it on the hosts.
+#
+# Standalone and idempotent: with no edits in vendor/postal it finds the image already
+# built from that source, redeploys nothing and finishes in seconds. That is what makes it
+# safe to import at the head of every measurement playbook.
+#
+# It ends by proving the running containers carry the source digest just built. The proof
+# is not decoration: a compose file that failed to change, a container that failed to
+# recreate, or a stale tag all produce a run that looks normal and measures the previous
+# build. There is no way to notice that in the numbers afterwards.
+
+- name: Gather facts from all hosts
+  hosts: all
+  gather_facts: true
+  tasks: []
+
+- name: Build and deploy the Postal image
+  hosts: postal_web:postal_smtp:postal_workers:postal_admin
+  become: true
+  roles:
+    - postal_image
+    - postal_app
+
+# postal initialize is `rake db:create postal:update`, which runs db:migrate on an
+# already initialised installation. It is here because a migration added to the fork —
+# an index on queued_messages being the obvious first one — is part of the build under
+# test, and a build whose schema never reached the database measures nothing.
+- name: Apply the schema of the build under test
+  hosts: postal_admin
+  become: true
+  roles:
+    - postal_schema
+
+- name: Prove the running containers are the build just deployed
+  hosts: postal_workers
+  become: true
+  gather_facts: false
+  tasks:
+    # The label is read off the RUNNING container rather than off the image: the question
+    # is not "was the image built" but "is it what the worker is executing".
+    - name: Read the source digest baked into the running worker
+      ansible.builtin.shell:
+        # Empty on every failure path — no such container, an image with no labels at all —
+        # so the assertion below reports the mismatch instead of the shell reporting itself.
+        cmd: >-
+          docker inspect
+          --format '{% raw %}{{index .Config.Labels "bench.source.sha256"}}{% endraw %}'
+          $(docker compose -f {{ postal_dir }}/docker-compose.yml ps -q worker1) 2>/dev/null || echo ''
+      args:
+        executable: /bin/bash
+      register: postal_running_source
+      changed_when: false
+      when: postal_image_source == 'local'
+
+    - name: Fail unless the worker runs the source in vendor/postal
+      ansible.builtin.assert:
+        that:
+          - (postal_running_source.stdout | trim) == postal_build_source_digest
+        fail_msg: >-
+          The worker is running source {{ postal_running_source.stdout | trim | default('(no label)', true) }}
+          while vendor/postal hashes to {{ postal_build_source_digest }}. The container was
+          not recreated with the new image, so a run started now would measure the previous
+          build. Re-run this playbook; if it repeats, remove the containers with
+          "docker compose -f {{ postal_dir }}/docker-compose.yml down" and deploy again.
+        success_msg: >-
+          Worker runs {{ postal_image_resolved }}, source {{ postal_build_source_digest[:12] }}
+          — the tree in vendor/postal.
+      when: postal_image_source == 'local'
