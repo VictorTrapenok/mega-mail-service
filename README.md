@@ -27,6 +27,83 @@ on that address as well as on the recipient domain.
 Every run states its own limits in a "what this run does not prove" section, and the
 reconciliation identity has to close within 1 % or the run is not reported as a result.
 
+## What still needs the customer's infrastructure
+
+The machines available for this work are 2 vCPU / 4 GB. Everything in this section is sized
+beyond them, and every item is a measurement rather than an opinion — which is exactly why it
+cannot be replaced by an estimate. **We are waiting for access to the customer's servers, or
+to a copy of that environment, to run them.**
+
+### Verifying the query plan on real data
+
+The one technical claim behind our change to batch collection is that it removes a full table
+scan per delivered message (see [docs/optimisations.md](docs/optimisations.md)). Whether MySQL
+actually seeks on `index_queued_messages_on_domain` is a property of the optimiser and of the
+data, and it is settled by one query:
+
+```sql
+EXPLAIN SELECT id FROM queued_messages
+ WHERE batch_key = 'outgoing-example.com' AND domain = 'example.com'
+   AND ip_address_id = 42
+   AND locked_by IS NULL AND locked_at IS NULL
+   AND (retry_after IS NULL OR retry_after < NOW())
+ LIMIT 100;
+```
+
+`key` must read `index_queued_messages_on_domain`.
+
+**An accurate answer needs production data, or at least a copy of it.** The optimiser is
+cost-based: on the few thousand queue rows a small bench holds it will choose a full scan
+whatever the indexes say, and the result proves nothing either way. What decides the plan is
+the real queue length, the real distribution of recipient domains and the real index
+statistics. A read-only replica or a dump of `queued_messages` is enough — no message bodies
+are needed.
+
+### Filling the queue to 10^5-10^6 rows
+
+`bench_prefill` fills the queue the normal way, through the API with the workers stopped, so
+it is limited by the ingress rate: a hundred thousand rows take about an hour and a million
+close to a day. That is the honest reason the batch-collection change is still unmeasured —
+the effect it removes grows with queue length and is invisible below roughly 10^5 rows, which
+the bench has already demonstrated (4851 and 9938 rows gave the same 20.8 recipients/s).
+
+Reaching those lengths needs a bulk path through SQL that reproduces the `messages` row, the
+two longblob rows of the per-day raw table and the queue row with all its associations, plus
+a check that delivery afterwards proceeds normally and the reconciliation adds up. On larger
+hardware it is a day of work and then a real number instead of a model.
+
+### A composite index led by `ip_address_id`
+
+The change already made deliberately touches no schema, because a schema change is exactly
+what cannot be tried cheaply on a live installation. The proper fix for the largest recipient
+domains is a composite index on `queued_messages` led by `ip_address_id`, and it should be
+measured on realistic data before it is proposed for production.
+
+### Pacing, provider tiers, greylisting
+
+The two-arm run showed the sender attempting four times its allowance per address and still
+using only 65 % of the quota: the receiver meters over 60 seconds while Postal defers a
+refusal by a hardcoded five minutes, so the quota goes unused while the work sits parked.
+Raising concurrency cannot fix this and was measured not to. What is needed is a sender that
+paces to the receiver's rate — first as a bench variant that proves the ceiling is reachable,
+then in our own build. Postal has no per-destination throttling state at all today: no
+per-domain or per-IP rate accounting, no backoff shorter than the five-minute ladder, no
+memory that a destination has just refused it.
+
+Alongside it, the sink models one uniform per-IP limit for every destination. A real mix is a
+handful of large providers with hard limits and a long tail with looser ones, and the
+aggregate ceiling of such a mix is not the ceiling measured against one uniform limit.
+Greylisting is not modelled either, and it changes the shape of a first-contact delivery
+completely.
+
+### Sharding across N independent installations
+
+Both confirmed serialisation points — the single global `statistics` row and the shared queue
+— live at the installation level, so adding workers and nodes does not relieve them. Running
+several independent installations side by side may therefore turn out to be the cheapest way
+to reach the target rate, and it is worth measuring before anything in the worker is
+rewritten.
+
 ## Requirements
 
 - Control machine: `ansible-core >= 2.17`, Python 3.10+.
@@ -79,7 +156,7 @@ The report appears in `reports/<run_id>.md`.
 
 ### Which build is measured
 
-By default a run tests **our own build**, compiled from the Postal fork vendored in
+By default a run tests **our own build**, compiled from the Postal source in
 [vendor/postal/](vendor/postal/). Every measurement playbook builds the image before
 resetting state, so the run always measures the source currently in the working tree:
 
@@ -96,7 +173,7 @@ what proves the run measured the edit rather than the previous build.
 Switching to the official image for a baseline, and other build controls:
 
 ```bash
-# the official ghcr.io image instead of the fork
+# the reference ghcr.io image instead of our source
 ansible-playbook -i inventories/distributed playbooks/benchmark.yml \
   -e postal_image_source=upstream -e postal_image_ref=3.3.7
 
@@ -107,7 +184,7 @@ ansible-playbook -i inventories/distributed playbooks/build.yml
 ansible-playbook -i inventories/distributed playbooks/build.yml -e postal_build_force=true
 ```
 
-Postal's own test suite runs against the fork on demand. It needs Ruby 3.4.6, a MySQL
+Postal's own test suite runs against our source on demand. It needs Ruby 3.4.6, a MySQL
 server and Docker together, so it runs on a host that has them — never on the workstation:
 
 ```bash
@@ -128,16 +205,16 @@ The `postal_specs` inventory group says where. It points at the auxiliary machin
 than the system under test: the image build is a two-core bundle install and has no business
 competing with a measurement.
 
-Every push builds the fork, runs Postal's test suite against it and — if the suite passes —
+Every push builds our source, runs Postal's test suite against it and — if the suite passes —
 publishes the image to the GitHub Container Registry as
 `ghcr.io/<owner>/<repo>/postal:src-<digest>`. That `src-` tag is the same string the report
 prints as "Source tree", which is what makes an image handed to a customer checkable
 rather than merely asserted. See
 [.github/workflows/postal-image.yml](.github/workflows/postal-image.yml).
 
-Details — how to add an index as a migration, how to hand the image over, how to refresh the
-fork from upstream — are in [docs/custom-builds.md](docs/custom-builds.md). What we have
-changed in the fork so far is in [docs/optimisations.md](docs/optimisations.md).
+Details — how to add an index as a migration, how to hand the image over — are in
+[docs/custom-builds.md](docs/custom-builds.md). What we have changed in Postal so far is in
+[docs/optimisations.md](docs/optimisations.md).
 
 Changing the target rate:
 
@@ -284,7 +361,7 @@ The lab passwords are kept in `group_vars/all/90-lab-credentials.yml` in plain
 text deliberately: the bench is isolated, there is nothing to protect, and pinning the keys is
 exactly what makes the runs of a series comparable.
 
-What does not go into the repository: the client fork's deploy key, registry
+What does not go into the repository: deploy keys, registry
 credentials, production DKIM keys, production dumps.
 
 ## What the bench does not do yet

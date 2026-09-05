@@ -38,8 +38,7 @@ jobs:
       digest: ${{ steps.id.outputs.digest }}
       short: ${{ steps.id.outputs.short }}
       image: ${{ steps.id.outputs.image }}
-      upstream_ref: ${{ steps.id.outputs.upstream_ref }}
-      upstream_commit: ${{ steps.id.outputs.upstream_commit }}
+      version: ${{ steps.id.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -63,9 +62,8 @@ jobs:
           DIGEST=$(git write-tree --prefix=vendor/postal/)
           unset GIT_INDEX_FILE
 
-          # The provenance of the fork has one source of truth, and it is not this file.
-          UPSTREAM_REF=$(grep -oP '^postal_build_upstream_ref:\s*"\K[^"]+' group_vars/all/20-images.yml)
-          UPSTREAM_COMMIT=$(grep -oP '^postal_build_upstream_commit:\s*"\K[^"]+' group_vars/all/20-images.yml)
+          # The Postal version has one source of truth, and it is not this file.
+          VERSION=$(grep -oP '^postal_version:\s*"\K[^"]+' group_vars/all/20-images.yml)
 
           # GHCR rejects uppercase in a repository name and GitHub owners may contain it.
           IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}/postal"
@@ -74,14 +72,13 @@ jobs:
             echo "digest=${DIGEST}"
             echo "short=${DIGEST:0:12}"
             echo "image=${IMAGE}"
-            echo "upstream_ref=${UPSTREAM_REF}"
-            echo "upstream_commit=${UPSTREAM_COMMIT}"
+            echo "version=${VERSION}"
           } >> "$GITHUB_OUTPUT"
 
           echo "### Postal build \`src-${DIGEST:0:12}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- source tree: \`${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- fork of upstream \`${UPSTREAM_REF}\` (\`${UPSTREAM_COMMIT}\`)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Postal version \`${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- image: \`${IMAGE}\`" >> "$GITHUB_STEP_SUMMARY"
 
   test:
@@ -171,18 +168,17 @@ jobs:
           cache-to: type=gha,mode=max
           platforms: linux/amd64
           build-args: |
-            VERSION=${{ needs.identity.outputs.upstream_ref }}
+            VERSION=${{ needs.identity.outputs.version }}
             BRANCH=bench-${{ needs.identity.outputs.short }}
           # bench.source.tree is the same label the local build bakes in, and it is what
           # both build.yml and the run report read off the RUNNING container. Without it an
           # image published here could not prove which source it came from.
           labels: |
             bench.source.tree=${{ needs.identity.outputs.digest }}
-            bench.upstream.ref=${{ needs.identity.outputs.upstream_ref }}
-            bench.upstream.commit=${{ needs.identity.outputs.upstream_commit }}
+            bench.postal.version=${{ needs.identity.outputs.version }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.description=Postal ${{ needs.identity.outputs.upstream_ref }} fork, source ${{ needs.identity.outputs.short }}
+            org.opencontainers.image.description=Postal ${{ needs.identity.outputs.version }}, source ${{ needs.identity.outputs.short }}
 
       - name: Say what was published
         run: |

@@ -1,27 +1,18 @@
 # Testing our own build of Postal
 
-The bench measures two things that are easy to confuse: the official Postal image, and the
-build we are trying to make faster. This document covers the second one — the fork in
+This document covers our own Postal build: the source in
 [vendor/postal/](../vendor/postal/), how it becomes a Docker image, and how a run proves
-which of the two it actually measured.
+which build it actually measured.
 
-## Where the fork lives
+## Where the source lives
 
-`vendor/postal/` is a plain copy of the upstream source at a known tag, committed to this
-repository. There is no submodule and no separate remote: the source is edited here, in the
-same working tree as the Ansible roles, and `git diff` over that directory is the whole
-patch set against upstream.
+`vendor/postal/` is our Postal source, committed to this repository. There is no submodule
+and no separate remote: it is edited here, in the same working tree as the Ansible roles, and
+it is built and tested from here.
 
-Provenance is declared in [group_vars/all/20-images.yml](../group_vars/all/20-images.yml):
-
-| Variable | Meaning |
-|---|---|
-| `postal_build_upstream_repo` | Where the source came from |
-| `postal_build_upstream_ref` | The tag it was taken at |
-| `postal_build_upstream_commit` | The exact commit of that tag |
-
-Those three values are printed in every report. Without them "which build produced this
-number" has no answer that can be checked six months later.
+The Postal version it implements is declared once, as `postal_version` in
+[group_vars/all/20-images.yml](../group_vars/all/20-images.yml). It goes into the image as
+the `VERSION` build argument and is printed in every report.
 
 ## Which image a run deploys
 
@@ -29,22 +20,17 @@ One variable decides, `postal_image_source`:
 
 | Value | What is deployed | What it is for |
 |---|---|---|
-| `local` (default) | An image built here from `vendor/postal/` | The candidate. The only path by which an added index or an edited worker reaches a run. |
-| `upstream` | The official `ghcr.io/postalserver/postal` image, resolved to a digest | The baseline. Numbers on it are comparable with [reports/reference/](../reports/reference/). |
+| `local` (default) | An image built here from `vendor/postal/` | Our build. The only path by which an added index or an edited worker reaches a run. |
+| `upstream` | The reference `ghcr.io/postalserver/postal` image, resolved to a digest | Kept because the runs in [reports/reference/](../reports/reference/) were made on it, so a number is comparable with them only if it can be re-measured the same way. |
 
 ```bash
-# the fork, i.e. whatever is in the working tree right now
+# our source, i.e. whatever is in the working tree right now
 ansible-playbook -i inventories/distributed playbooks/benchmark.yml
 
-# the official image, for a baseline in the same series
+# the reference image, to re-measure a published baseline
 ansible-playbook -i inventories/distributed playbooks/benchmark.yml \
   -e postal_image_source=upstream -e postal_image_ref=3.3.7
 ```
-
-The fork is vendored at the pristine upstream tag, so with no edits a `local` build is the
-same code as the baseline. That is deliberate: the first thing worth measuring is that the
-two agree, because a difference between them is a property of the build environment and
-would otherwise be silently attributed to the first optimisation attempted.
 
 ## The edit-and-measure loop
 
@@ -65,7 +51,7 @@ Set `postal_build_before_run=false` to skip it, or run `playbooks/build.yml` on 
 
 `build.yml` runs `postal_schema` after deploying, and `postal initialize` is
 `rake db:create postal:update`, which takes the `db:migrate` branch on an already
-initialised installation. So a migration added to the fork is applied before the run.
+initialised installation. So a migration added to our source is applied before the run.
 
 Adding an index to `queued_messages` therefore means a normal Rails migration under
 `vendor/postal/db/migrate/`, plus the matching change to `db/schema.rb`. It does **not**
@@ -101,12 +87,12 @@ checkout umask as well. A git tree id has one definition and every git computes 
 Two further properties fall out of using git rather than the filesystem:
 
 - **It covers exactly what a checkout covers.** `git add` honours `.gitignore`, so a
-  `vendor/bundle` left behind by somebody running `bundle install` inside the fork changes
+  `vendor/bundle` left behind by somebody running `bundle install` in the source changes
   neither the hash nor the image.
 - **The build context is exported from that same tree id** with `git archive`, so the bytes
   shipped to the host are the bytes the hash describes rather than a similar set of files.
 
-The fork therefore has to live inside a git working tree; a downloaded zip will not do, and
+The source therefore has to live inside a git working tree; a downloaded zip will not do, and
 the roles fail with that message rather than silently hashing something else.
 
 Two things follow. A hand-maintained tag lies as soon as somebody forgets to bump it, and
@@ -158,8 +144,8 @@ It deploys nothing, touches neither the Postal stack nor its database, and publi
 push, in three jobs:
 
 1. **identity** — computes the source digest with the same tar recipe the Ansible role uses,
-   and reads the fork's provenance out of `group_vars/all/20-images.yml` so there is one
-   source of truth for it. Both land in the run summary.
+   and reads `postal_version` out of `group_vars/all/20-images.yml` so there is one source of
+   truth for it. Both land in the run summary.
 2. **test** — builds the `ci` target and runs `bundle exec rspec` against a throw-away
    MariaDB, using Postal's own [docker-compose.yml](../vendor/postal/docker-compose.yml).
    The same three steps `playbooks/rspec.yml` performs above; the difference is only where
@@ -201,7 +187,7 @@ Two things to do once, before the first handover:
   that is cosign or GitHub attestations, and neither is set up.
 
 To point the bench at a published image instead of building locally, deploy it as an
-upstream reference:
+reference-image path:
 
 ```bash
 ansible-playbook -i inventories/distributed playbooks/benchmark.yml \
@@ -209,19 +195,6 @@ ansible-playbook -i inventories/distributed playbooks/benchmark.yml \
   -e postal_image_repo=ghcr.io/<owner>/<repo>/postal \
   -e postal_image_ref=src-250f8d03cec2
 ```
-
-## Updating the fork from upstream
-
-```bash
-git clone --depth 1 --branch <new-tag> https://github.com/postalserver/postal.git /tmp/postal
-rm -rf /tmp/postal/.git
-# merge by hand, or diff against the current vendor/postal to see what upstream changed
-```
-
-Then update `postal_build_upstream_ref` and `postal_build_upstream_commit`, and re-read
-[postal-internals.md](postal-internals.md): it describes the actual behaviour of a specific
-version, not the project's intentions, and every item in it has to be re-checked when the
-version moves.
 
 ## What this does not do
 
@@ -233,7 +206,6 @@ version moves.
 - **It does not pin the base image.** `postal_build_pull` is off by default so a series is
   not rebased mid-flight, but the first build on a fresh host takes whatever
   `ruby:3.4.6-slim-bookworm` points at that day.
-- **It does not make the local build byte-identical to the official one.** They are built
-  from the same source and the same pinned `Gemfile.lock`, on possibly different base
-  layers. Comparing `local` with no edits against `upstream` is the measurement that says
-  how much that matters, and it has not been run yet.
+- **It does not make the local build byte-identical to the reference image.** The
+  `Gemfile.lock` is pinned, but the base layers may differ, so a `local` build and the
+  reference image are not the same bytes even where the code is the same.

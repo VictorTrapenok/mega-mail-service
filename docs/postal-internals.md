@@ -1,12 +1,11 @@
-# Confirmed Postal 3.3.7 internals
+# Confirmed Postal internals
 
-Everything below was verified by reading the sources of tag `3.3.7`, not the documentation. Each
-item explains a specific decision in the bench roles — remove the item and it becomes
-unclear why the role is built the way it is.
+Everything below was verified by reading the source in [vendor/postal/](../vendor/postal/),
+not the documentation. Each item explains a specific decision in the bench roles — remove the
+item and it becomes unclear why the role is built the way it is.
 
-The links point at specific files. When the Postal version is updated, this document
-must be re-checked: it describes not the project's intentions but the actual behaviour
-of the code.
+It describes the actual behaviour of the code, not anybody's intentions, so it has to be
+re-checked whenever that code changes.
 
 ## Composition
 
@@ -22,9 +21,8 @@ The image is built on `ruby:3.4.6-slim-bookworm`, Rails 7.1.6, Puma. Only
 ## What to read when debugging
 
 The paths below are relative to the Postal source, which is now in this repository:
-[vendor/postal/](../vendor/postal/), forked at tag 3.3.7. So they are also the files to
-edit — anything changed there is in the next run's image
-(see [custom-builds.md](custom-builds.md)).
+[vendor/postal/](../vendor/postal/). So they are also the files to edit — anything changed
+there is in the next run's image (see [custom-builds.md](custom-builds.md)).
 
 | Question | File |
 |---|---|
@@ -110,9 +108,9 @@ domain accounts for at least a hundred queue rows; with a thousand domains that 
 queue of hundreds of thousands of rows. Until there is one, the query runs to the end of the
 table, and this happens for **every** claimed message.
 
-Our fork narrows this query without touching the schema — see
-[optimisations.md](optimisations.md). What is described here is upstream's behaviour,
-which is what the bench compares against.
+We have since narrowed this query without touching the schema — see
+[optimisations.md](optimisations.md). What is described here is the behaviour before that
+change, which is what the reference runs measured.
 
 The consequence this suggests: the cost of processing a message should grow together
 with the queue length divided by the density of its `batch_key`.
@@ -250,6 +248,22 @@ So a rejection saying "try again in 30 seconds" produces a 40-second retry inste
 minutes. Postfix's own anvil rejections carry no such hint and cannot be reworded, but this is
 the lever any future policy-service sink would use to make throttled runs measurable in a
 short window.
+
+## Webhooks are blocked to private addresses
+
+`Postal::HTTP::AddressGuard` refuses any outbound webhook or HTTP-endpoint request whose
+destination resolves into a private, loopback, link-local, multicast or otherwise reserved
+range, as SSRF protection. `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` and `127.0.0.0/8`
+are all on that list.
+
+The failure is quiet in the way that matters: the `webhook_requests` row is still created,
+still retried and still recorded, and the only sign is `error` reading
+`Couldn't send to URL. Code received was -4`. Webhooks look enabled and deliver nothing.
+
+The escape hatch is `postal.allowed_request_destinations` — hostnames or IP/CIDR ranges,
+`POSTAL_ALLOWED_REQUEST_DESTINATIONS` as a comma-separated environment variable. Any
+installation whose webhook endpoint is internal needs it, and the bench sets it for its own
+sink.
 
 ## The resolver
 

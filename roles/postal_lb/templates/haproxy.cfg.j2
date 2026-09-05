@@ -46,6 +46,14 @@ backend postal_web
 {% endfor %}
 {% endfor %}
 
+# The webhook sink. Postal's WebhookRequest is delivered by the same worker process that
+# delivers mail, so with webhooks enabled every message costs an HTTP round trip on top of
+# the SMTP one. HAProxy returns the response itself: no backend, no application, no latency
+# of somebody else's making mixed into the number.
+frontend webhook_sink
+    bind {{ svc_ip }}:{{ postal_lb_webhook_port }}
+    http-request return status 204
+
 listen stats
     bind {{ svc_ip }}:{{ postal_lb_stats_port }}
     stats enable

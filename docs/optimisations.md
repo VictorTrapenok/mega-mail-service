@@ -1,11 +1,11 @@
 # Our changes to Postal
 
-The patch log for the fork in [vendor/postal/](../vendor/postal/). One section per change:
-what it does, why it is safe, what it is expected to buy, and — separately — whether that
-has been measured. A change with no measurement is a hypothesis, and it is recorded here as
-one until a run says otherwise.
+The log of our changes to the Postal source in [vendor/postal/](../vendor/postal/). One
+section per change: what it does, why it is safe, what it is expected to buy, and —
+separately — whether that has been measured. A change with no measurement is a hypothesis,
+and it is recorded here as one until a run says otherwise.
 
-`git diff` over `vendor/postal/` is the authoritative patch set; this file explains it.
+The code is the authoritative version; this file explains why it is the way it is.
 
 | # | Change | Schema | Status |
 |---|---|---|---|
@@ -82,8 +82,8 @@ keep the old plan.
   delivered twice.
 - The two cases are pinned by specs in
   [spec/models/queued_message_spec.rb](../vendor/postal/spec/models/queued_message_spec.rb).
-  The existing upstream specs use a batch key of `"1234"`, which does not satisfy the
-  invariant, so they exercise the unchanged path.
+  The pre-existing specs use a batch key of `"1234"`, which does not satisfy the invariant,
+  so they exercise the unchanged path.
 
 **Postal's suite passes on this tree: 812 examples, 0 failures** — both locally via
 `playbooks/rspec.yml` and in CI. The two new examples were confirmed to run by

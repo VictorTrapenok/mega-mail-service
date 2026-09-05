@@ -7,6 +7,11 @@
 bench_profile: primary
 
 bench_profiles:
+  # tracking and webhooks are ON in both profiles, because production runs with them and a
+  # bench without them understates the worker's work: tracking rewrites every link and writes
+  # a row into `links` per link, and a webhook is an HTTP POST issued by the same worker
+  # process for every delivery. The consequence is that numbers from these profiles are NOT
+  # comparable with the runs in reports/reference/, which were measured with both off.
   primary:
     # 1 recipient per message, so recipients == messages and reconciliation is simple.
     recipients_per_message: 1
@@ -16,9 +21,9 @@ bench_profiles:
     # a free ~100x win and makes the baseline dishonest.
     destination_domains: 1000
     destination_skew: zipf
-    tracking: false
+    tracking: true
     dkim: true
-    webhooks: false
+    webhooks: true
 
   # High domain cardinality profile. It is needed because the batching query
   # (batchable_messages) is not covered by an index and stops only once it has collected
@@ -30,9 +35,9 @@ bench_profiles:
     mime_size_bytes: 102400
     destination_domains: 100000
     destination_skew: zipf
-    tracking: false
+    tracking: true
     dkim: true
-    webhooks: false
+    webhooks: true
 
 # Target rate, recipients per second.
 # 5M over 24h = 58 rcpt/s on average.

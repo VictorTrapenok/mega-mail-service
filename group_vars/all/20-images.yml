@@ -3,35 +3,28 @@
 #
 # --- Which Postal build is under test -------------------------------------
 #
-# upstream — the official ghcr.io image (the baseline). Numbers obtained on it are
-#            comparable with the reference runs in reports/reference/.
-# local    — an image built from the fork in vendor/postal (the candidate). This is the
+# local    — an image built from OUR Postal source in vendor/postal. The default, and the
 #            only path by which an added index or an edited worker reaches a run.
+# upstream — the reference ghcr.io image, resolved to an immutable digest. Kept because the
+#            runs in reports/reference/ were made on it, so a number is only comparable
+#            with them if it can be re-measured the same way.
 #
-# The default is "local" because that is what this repository is for: the fork is
-# vendored at the pristine upstream tag, so a local build with no edits is the same
-# code as the baseline, and every edit made to vendor/postal is in the next run
-# automatically. Switch back with -e postal_image_source=upstream to re-measure the
-# official image without touching the fork.
-#
-# The two settings below apply to their own branch only: postal_image_ref is read by the
-# upstream path, the postal_build_* values by the local one.
+# The settings below apply to their own branch only: postal_image_ref is read by the
+# reference-image path, the postal_build_* values and postal_version by the local one.
 postal_image_source: "local"
 
-# Provenance of the fork in vendor/postal. Both values end up in the run report: without
-# them "which build produced this number" has no answer that can be checked later.
-# Update them together with the source — see docs/custom-builds.md.
-postal_build_upstream_repo: "https://github.com/postalserver/postal.git"
-postal_build_upstream_ref: "3.3.7"
-postal_build_upstream_commit: "d038eaa8c763d3cafa797ccd6f773d53470bd336"
+# The Postal version our source implements. It is written into the image as the VERSION
+# build argument, which is what `postal --version` and the report print, and it is a property
+# of our own codebase rather than a pointer at anybody else's branch.
+postal_version: "3.3.7"
 
 # The local image is tagged postal_build_image_repo:src-<first 12 hex of the source
-# digest>. The tag is therefore content-addressed: it changes if and only if the source
+# tree id>. The tag is therefore content-addressed: it changes if and only if the source
 # changes, which is what lets every measurement playbook ask for a build before the run
 # and pay nothing when nothing was edited.
 postal_build_image_repo: "postal-bench/postal"
 
-# Where the fork lives on the CONTROLLER. Every playbook of this project sits in playbooks/,
+# Where our Postal source lives on the CONTROLLER. Every playbook of this project sits in playbooks/,
 # so the repository root is one level up from playbook_dir. The path is kept split because
 # the source identity is computed by git, which needs the repository and a path inside it.
 postal_build_repo_dir: "{{ playbook_dir }}/.."
@@ -48,7 +41,7 @@ postal_build_pull: false
 # editing the worker, running benchmark.yml and measuring the previous build.
 postal_build_before_run: true
 
-# --- The official image ---------------------------------------------------
+# --- The reference image --------------------------------------------------
 #
 # postal_image_ref may be either a tag OR a digest, but the postal_image role always
 # resolves it to a digest and deploys exactly that digest, recording both values

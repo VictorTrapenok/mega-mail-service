@@ -1,5 +1,5 @@
 ---
-# Running Postal's own rspec suite against the fork, on a host that has Docker.
+# Running Postal's rspec suite against our source, on a host that has Docker.
 #
 # It exists because the suite needs Ruby 3.4.6, a MySQL server and Docker at once, which a
 # workstation generally does not have — and because a change to the fork should be checkable
@@ -11,7 +11,7 @@
 # tree — and the source is exported from that same tree id. A suite result and a benchmark
 # result therefore carry one identical identity rather than two that were probably the same.
 
-- name: Make sure the fork has been vendored
+- name: Make sure the Postal source is present
   ansible.builtin.stat:
     path: "{{ postal_build_source_dir }}/Dockerfile"
   delegate_to: localhost
@@ -74,7 +74,7 @@
     fail_msg: >-
       Could not read a git tree id for {{ postal_build_source_rel }} under
       {{ postal_build_repo_dir }}: {{ postal_specs_tree.stderr | default('') | trim }}.
-      The fork has to live inside a git working tree — that is where the identity of the
+      The source has to live inside a git working tree — that is where the identity of the
       code under test comes from.
 
 - name: Pin the identity of the tree under test
@@ -110,7 +110,7 @@
   changed_when: false
 
 # Wiped rather than overwritten: unarchive adds and replaces but never removes, so a file
-# deleted from the fork would survive here and go on being tested.
+# deleted from the source would survive here and go on being tested.
 - name: Reset the source directory
   ansible.builtin.file:
     path: "{{ postal_specs_dir }}"

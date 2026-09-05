@@ -60,9 +60,11 @@ report refuses to print it at all unless the addresses actually reached their qu
 run, because otherwise it would describe the sender's speed while reading as the receiver's
 limit.
 
-## An IP pool is a cost, not a scaling mechanism
+## A large IP pool is what our changes are aimed at
 
-This is the finding with the most operational consequence, and it is counter-intuitive.
+This is the finding with the most operational consequence, and it is what our work on the
+code targets: an installation sending from a large pool of addresses is the case Postal
+handles worst, and therefore the case with the most to gain.
 
 `QueuedMessage` binds an outbound address to a message with `before_create :allocate_ip_address`
 — at the moment the message is accepted, hours before it is sent, by weighted random choice
@@ -89,10 +91,15 @@ addresses rows in the queue. At 1000 domains and a few hundred addresses, even a
 requires a queue in the hundreds of thousands — in other words, batching stops happening at
 all and every message becomes its own session.
 
-A pool exists to satisfy an external constraint — recipient providers cap volume per source
-address — and it buys that at a measurable throughput price. It should be budgeted as a
-deliverability requirement, and sized to what deliverability actually needs rather than
-maximised.
+A large pool is not optional: recipient providers cap volume per source address, so the
+addresses are what buys the aggregate rate. The pool is a deliverability requirement, and the
+cost above is a property of Postal's implementation rather than of the pool.
+
+That is precisely where our changes apply. The larger the pool, the rarer it is for batch
+collection to find a partner and the more work Postal does per message — so the bigger the
+pool, the more there is to recover in the code. The first change is described in
+[docs/optimisations.md](docs/optimisations.md); measuring it needs a bench arm with many
+addresses, which the hardware available so far cannot provide.
 
 ## What limits a receiver can impose, and which one binds
 
@@ -148,14 +155,13 @@ Stated plainly, because the numbers above are worth only as much as their limits
 - **Sustained throughput has never been measured.** Every result here is a drain run against a
   pre-filled queue. Ingress and delivery have not been run together at the target rate, and
   that combined figure is the only one that extrapolates to a full day.
-- **No repeats, so there is no noise floor.** Single runs; a difference smaller than the
-  spread between repeats cannot be called a win, and the spread is unknown.
+- **Single runs, no repeats.** The spread between repeats of the same build is unknown, so a
+  small difference between two runs cannot be read as a result.
 - **The SMTP submission path is not exercised.** The generator uses the HTTP API. Postal's
   SMTP ingress, its authentication and the `credentials` table — which carries no indexes at
   all — never see load.
-- **The sink is not a real MX.** No STARTTLS on either direction, no greylisting, no
-  reputation effects, no connection failures, and every destination throttles identically
-  where a real mix has tiers.
+- **The sink is not a real MX.** No greylisting, no reputation effects, no connection
+  failures, and every destination throttles identically where a real mix has tiers.
 - **Queue lengths above roughly 25 000 rows are untested**, and both hot worker queries are
   uncovered by indexes.
 - **`send_limit` is disabled by the seeding, the MariaDB binlog is off, tracking and webhooks

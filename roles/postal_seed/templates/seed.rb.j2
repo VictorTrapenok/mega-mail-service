@@ -46,11 +46,15 @@ if server.new_record?
   server.save!
 end
 
-# We clear the send limit and retention: otherwise some messages end up Held
-# because of send_limit, and the daily cleanup task may drop the raw table
-# in the middle of a run. These are server columns, not environment variables.
+# Retention is cleared so the daily cleanup task cannot drop the raw table in the middle of
+# a run. The send limit is NOT cleared: with the column nil, Server#send_limit_exceeded?
+# returns false immediately and the whole check is skipped — including the UPDATE of the
+# servers row that OutgoingMessageProcessor performs on every message, which is one of the
+# three serialisation points of an installation. The value is high enough never to hold a
+# message; what is being reproduced is the cost of the check, not the effect of the limit.
+# These are server columns, not environment variables.
 server.update_columns(
-  send_limit: nil,
+  send_limit: {{ postal_server_send_limit | int }},
   message_retention_days: nil,
   raw_message_retention_days: nil,
   raw_message_retention_size: nil
@@ -100,6 +104,39 @@ IPAddress.find_or_create_by!(ipv4: {{ ip.ipv4 | to_json }}) do |a|
 end
 {% endfor %}
 {% endfor %}
+{% endif %}
+
+{% if bench_profiles[bench_profile].tracking | default(false) | bool %}
+# Tracking. MessageParser looks the domain up as
+#   server.track_domains.where(domain: message.domain, dns_status: "OK").first
+# so both the association and the OK status are load-bearing. The status is set at create
+# time on purpose: TrackDomain has `after_create :check_dns, unless: :dns_status`, and that
+# callback resolves a CNAME which does not exist in the bench zone.
+#
+# No DNS record is needed for the name itself: nothing in the bench clicks a link. What is
+# being reproduced is the worker's cost — rewriting every link in the body, inserting the
+# tracking image, and writing a row into the links table per link.
+track_domain = TrackDomain.find_or_initialize_by(server_id: server.id, domain_id: domain.id)
+if track_domain.new_record?
+  track_domain.name = {{ postal_track_domain_name | to_json }}
+  track_domain.dns_status = "OK"
+  track_domain.track_clicks = true
+  track_domain.track_loads = true
+  track_domain.save!
+end
+{% endif %}
+
+{% if bench_profiles[bench_profile].webhooks | default(false) | bool %}
+# Webhooks. Delivery#create triggers a WebhookRequest for every delivery, and
+# Worker::Jobs::ProcessWebhookRequestsJob sends it from the SAME worker process that sends
+# mail — so with webhooks on, each message costs an HTTP round trip on top of the SMTP one,
+# plus a row in the main database.
+webhook = Webhook.find_or_initialize_by(server_id: server.id,
+                                        name: {{ postal_webhook_name | to_json }})
+webhook.url = {{ postal_webhook_url | to_json }}
+webhook.all_events = true
+webhook.enabled = true
+webhook.save!
 {% endif %}
 
 {% if postal_force_domain_verification %}

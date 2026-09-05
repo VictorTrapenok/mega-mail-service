@@ -106,3 +106,10 @@ postal_smtp_tls_enabled: false
 # Maximum message size (MB). Must be kept consistent
 # with message_size_limit on the Postfix sink side.
 postal_smtp_max_message_size: 25
+
+# Extra destinations Postal may send webhooks and HTTP-endpoint requests to, on top of the
+# bench's own webhook sink, which is added automatically. Postal blocks private, loopback and
+# link-local destinations by default as SSRF protection, so anything on an RFC1918 address
+# has to be named here or the requests fail with code -4 — created, retried, recorded, and
+# never delivered.
+postal_allowed_request_destinations: []

@@ -1,4 +1,16 @@
 ---
+
+# The webhook sink lives on the load balancer host. Without one the URL below cannot be
+# built, and the failure would otherwise arrive as a Jinja error inside a template.
+- name: Check that the webhook sink has somewhere to live
+  ansible.builtin.assert:
+    that:
+      - (groups['postal_load_balancers'] | default([]) | length) > 0
+    fail_msg: >-
+      Profile "{{ bench_profile }}" enables webhooks, but the postal_load_balancers group is
+      empty, and that host is where the webhook sink runs. Either add a host to the group or
+      set webhooks: false for this profile in group_vars/all/50-bench.yml.
+  when: bench_profiles[bench_profile].webhooks | default(false) | bool
 - name: Deploy the seeding script
   ansible.builtin.template:
     src: seed.rb.j2

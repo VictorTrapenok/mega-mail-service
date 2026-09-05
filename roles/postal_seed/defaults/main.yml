@@ -11,3 +11,29 @@
 postal_force_domain_verification: false
 
 postal_seed_script: /opt/postal-bench/postal/scripts/seed.rb
+
+# Send limit on the seeded server.
+#
+# It is deliberately NOT nil. Server#send_limit_exceeded? returns false immediately when the
+# column is nil, which skips both the live_stats aggregate it would otherwise run and the
+# UPDATE of the servers row that OutgoingMessageProcessor#check_send_limits performs on every
+# message. That UPDATE is one of the three serialisation points of an installation — a single
+# row per server, written once per delivery — so a bench with the column nil does not exercise
+# it at all and understates what production does.
+#
+# The value is set high enough never to hold a message: what is being reproduced is the cost
+# of the check, not the effect of the limit.
+postal_server_send_limit: 10000000
+
+# Subdomain label of the tracking domain, used when the profile enables tracking.
+# No DNS record is needed for it: nothing in the bench clicks a link, and the cost being
+# reproduced is the rewriting of the message and the rows written to the links table.
+postal_track_domain_name: "track"
+
+postal_webhook_name: "bench-sink"
+
+# Where the webhook POSTs go. HAProxy on the load balancer host answers them with a fixed
+# 204 (see roles/postal_lb/templates/haproxy.cfg.j2); a real endpoint would mix its own
+# latency into the measurement.
+postal_webhook_url: >-
+  http://{{ hostvars[groups['postal_load_balancers'] | first].svc_ip }}:{{ postal_lb_webhook_port }}/

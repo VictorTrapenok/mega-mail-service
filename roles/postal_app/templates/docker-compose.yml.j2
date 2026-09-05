@@ -62,6 +62,17 @@ x-postal-common: &postal-common
     DNS_DOMAIN_VERIFY_PREFIX: "{{ postal_dns.domain_verify_prefix }}"
     DNS_CUSTOM_RETURN_PATH_PREFIX: "{{ postal_dns.custom_return_path_prefix }}"
 
+{# Postal refuses outbound webhook and HTTP-endpoint requests whose destination resolves to
+   a private, loopback or link-local address — Postal::HTTP::AddressGuard, SSRF protection.
+   The bench's webhook sink sits on an RFC1918 address, so without an allowlist entry every
+   webhook fails with code -4 while the feature still looks enabled: the requests are
+   created, retried and recorded, and nothing ever arrives. Measured, not assumed. #}
+{% set webhook_destinations = ((groups['postal_load_balancers'] | default([])) | map('extract', hostvars, 'svc_ip') | list)
+                              + (postal_allowed_request_destinations | default([])) %}
+{% if webhook_destinations %}
+    POSTAL_ALLOWED_REQUEST_DESTINATIONS: "{{ webhook_destinations | join(',') }}"
+{% endif %}
+
     LOGGING_ENABLED: "true"
     LOGGING_HIGHLIGHTING_ENABLED: "false"
 

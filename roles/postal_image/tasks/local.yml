@@ -1,5 +1,5 @@
 ---
-# Building the Postal image from the fork vendored in vendor/postal.
+# Building the Postal image from our Postal source in vendor/postal.
 #
 # The tag is derived from the CONTENT of the source tree, not from a version string.
 # Two reasons, and both matter more here than tidiness:
@@ -23,13 +23,13 @@
 #   definition and every git computes it identically.
 #
 #   It covers exactly what a checkout covers. `git add` honours .gitignore, so a stray
-#   vendor/bundle left behind by somebody running bundle install in the fork changes neither
+#   vendor/bundle left behind by somebody running bundle install there changes neither
 #   the hash nor the image, and the tag keeps meaning "the code CI would build".
 #
 #   The same tree id is then exported with `git archive`, so the bytes shipped to the host
 #   are the bytes the hash describes rather than a similar set of files.
 
-- name: Make sure the fork has been vendored
+- name: Make sure the Postal source is present
   ansible.builtin.stat:
     path: "{{ postal_build_source_dir }}/Dockerfile"
   delegate_to: localhost
@@ -43,7 +43,7 @@
       - postal_build_dockerfile.stat.exists
     fail_msg: >-
       {{ postal_build_source_dir }}/Dockerfile is missing, so there is no source to build.
-      Restore the fork (see docs/custom-builds.md) or deploy the official image with
+      Restore it (see docs/custom-builds.md) or deploy the reference image with
       -e postal_image_source=upstream.
 
 # Kept identical to the snippet in .github/workflows/postal-image.yml and in the
@@ -75,7 +75,7 @@
     fail_msg: >-
       Could not read a git tree id for {{ postal_build_source_rel }} under
       {{ postal_build_repo_dir }}: {{ postal_build_tree.stderr | default('') | trim }}.
-      The fork has to live inside a git working tree — that is where the build identity
+      The source has to live inside a git working tree — that is where the build identity
       comes from. A downloaded zip will not do.
 
 - name: Pin the build identity
@@ -131,7 +131,7 @@
   when: postal_build_needed | bool
 
 # Wiped rather than overwritten: unarchive adds and replaces files but never removes them,
-# so a file deleted from the fork would survive in the context and go on being built in.
+# so a file deleted from the source would survive in the context and go on being built in.
 - name: Reset the build context directory
   ansible.builtin.file:
     path: "{{ postal_build_dir }}"
@@ -158,7 +158,7 @@
       # The default target is `full` and it is named anyway. `ci` skips asset
       # precompilation, and production.rb has config.assets.compile = false, so web then
       # returns 500 on every page while a TCP health check still reports it alive. That is
-      # the same trap postal_image_forbidden_refs exists for on the upstream path.
+      # the same trap postal_image_forbidden_refs exists for on the reference-image path.
       - "--target"
       - full
       # Kept false by default: the base image tag ruby:3.4.6-slim-bookworm moves, and
@@ -166,7 +166,7 @@
       # differ only in our own source.
       - "--pull={{ postal_build_pull | lower }}"
       - "--build-arg"
-      - "VERSION={{ postal_build_upstream_ref }}"
+      - "VERSION={{ postal_version }}"
       - "--build-arg"
       - "BRANCH=bench-{{ postal_build_source_digest[:12] }}"
       # Baked in so the report can read the source identity off the RUNNING container
@@ -175,9 +175,7 @@
       - "--label"
       - "bench.source.tree={{ postal_build_source_digest }}"
       - "--label"
-      - "bench.upstream.ref={{ postal_build_upstream_ref }}"
-      - "--label"
-      - "bench.upstream.commit={{ postal_build_upstream_commit }}"
+      - "bench.postal.version={{ postal_version }}"
       - "--tag"
       - "{{ postal_image_resolved }}"
       - "{{ postal_build_dir }}/{{ postal_build_source_rel | basename }}"
@@ -213,6 +211,6 @@
 - name: Show which image will be deployed
   ansible.builtin.debug:
     msg: >-
-      Postal: {{ postal_image_resolved }} ({{ postal_build_image_id }}),
-      built from vendor/postal, fork of {{ postal_build_upstream_ref }}
+      Postal {{ postal_version }}: {{ postal_image_resolved }} ({{ postal_build_image_id }}),
+      built from vendor/postal
       {{ '(rebuilt now)' if postal_build_needed | bool else '(already built from this source)' }}

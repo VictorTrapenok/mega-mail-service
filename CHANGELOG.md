@@ -1,5 +1,52 @@
 # CHANGELOG
 
+## 2026-09-05
+
+### The bench now exercises what production does
+
+- **`send_limit` is no longer cleared by the seeding.** With the column nil,
+  `Server#send_limit_exceeded?` returns immediately and the whole check is skipped —
+  including the `UPDATE` of the `servers` row that happens on every message, one of the three
+  serialisation points of an installation. It is now set high enough never to hold a message,
+  so the cost of the check is reproduced without its effect.
+- **The `tracking` and `webhooks` profile flags now do something, and are on.** Seeding
+  creates a `TrackDomain` (with `dns_status: "OK"`, which is both what `MessageParser` looks
+  for and what skips the CNAME check) and a `Webhook`. Webhook POSTs go to a fixed-204
+  frontend added to the bench HAProxy, so the receiver adds no latency of its own.
+  `bench_reset` now truncates `webhook_requests`, and the single-host inventory gained a
+  `postal_load_balancers` host because that is where the webhook sink runs.
+  **Numbers from these profiles are not comparable with `reports/reference/`**, which were
+  measured with both features off.
+- **Found while turning webhooks on: Postal blocks them to private addresses.**
+  `Postal::HTTP::AddressGuard` refuses any outbound webhook whose destination resolves into
+  an RFC1918, loopback or link-local range, as SSRF protection. It fails quietly in the way
+  that matters — the request row is created, retried and recorded, and the only sign is
+  `error` reading `Code received was -4`. The bench now sets
+  `POSTAL_ALLOWED_REQUEST_DESTINATIONS` for its own sink, and the behaviour is written up in
+  `docs/postal-internals.md`, because any installation with an internal webhook endpoint hits
+  it.
+- Verified on the bench rather than assumed: `send_limit` is 10000000 on the seeded server,
+  the track domain exists with `dns_status: OK`, and a message carrying an HTML link came out
+  with `tracked_links: 2`, `tracked_images: 1` and two rows in `links`, while HAProxy logged
+  the matching webhook POSTs answered 204.
+
+### Scope and framing
+
+- The source in `vendor/postal/` is treated as ours: references to the upstream repository,
+  its commit and the procedure for tracking it are gone. `postal_build_upstream_*` collapsed
+  into a single `postal_version`, the image label is `bench.postal.version`, and the
+  `upstream` image source is kept only because the runs in `reports/reference/` were made on
+  it and have to remain re-measurable.
+- What needs hardware we do not have moved out of `roadmap.md` and into a README section,
+  **"What still needs the customer's infrastructure"** — the query plan on real data, filling
+  the queue to 10^5-10^6 rows, the composite index, pacing and provider tiers, and sharding
+  across installations. It states plainly that we are waiting for access.
+- The IP-pool finding is stated as what our changes target rather than as a fault of the
+  customer's configuration: the larger the pool, the more work Postal does per message, and
+  the more there is to recover in the code.
+- Dropped from the roadmap as not wanted for the MVP: the campaign/noise-floor work, the
+  `local`-vs-`upstream` comparison, tying a report to a git commit, and the STARTTLS gap.
+
 ## 2026-09-04
 
 ### Running the test suite

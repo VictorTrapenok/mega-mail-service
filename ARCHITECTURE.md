@@ -10,8 +10,8 @@ there are only links and general principles.
 | [postal-benchmark-ansible-task.md](postal-benchmark-ansible-task.md) | Bench requirements and acceptance criteria |
 | [POSTAL_OPTIMIZATION_GUIDE.md](POSTAL_OPTIMIZATION_GUIDE.md) | Measurement methodology and the optimisation sequence |
 | [docs/postal-internals.md](docs/postal-internals.md) | Confirmed Postal 3.3.7 internals with paths into the sources |
-| [docs/custom-builds.md](docs/custom-builds.md) | The Postal fork in `vendor/postal/`, how it is built and how a run proves which build it measured |
-| [docs/optimisations.md](docs/optimisations.md) | The patch log for the fork: what each change does, why it is safe, and whether it has been measured |
+| [docs/custom-builds.md](docs/custom-builds.md) | Our Postal source in `vendor/postal/`, how it is built and how a run proves which build it measured |
+| [docs/optimisations.md](docs/optimisations.md) | Our changes to Postal: what each one does, why it is safe, and whether it has been measured |
 | [README.md](README.md) | Commands for running things |
 | [roadmap.md](roadmap.md) | What has been deferred and why |
 
@@ -40,7 +40,7 @@ The roles are grouped by purpose:
   `postal_seed`.
 - **Measurement environment** — `postfix_sink`, `loadgen`, `bench_samplers`,
   `bench_report`, `bench_reset`.
-- **Checking our own build** — `postal_specs` (Postal's rspec suite against the fork, on a
+- **Checking our own build** — `postal_specs` (Postal's rspec suite against our source, on a
   host with Docker; the `postal_specs` inventory group deliberately points away from the
   system under test).
 - **Measurements** — `bench_run` (ingress and draining together), `bench_ingress` (ingress
@@ -84,8 +84,8 @@ an identical starting state before every run.
 thanks to silently lost messages is indistinguishable in the report from a genuine optimisation,
 so reconciliation by state buckets is part of every run.
 
-**A run must prove which build produced it.** The candidate is built from the fork in
-`vendor/postal/` and tagged by a digest of that source, so the tag cannot fall behind the
+**A run must prove which build produced it.** Our build comes from the source in
+`vendor/postal/` and is tagged by a hash of that source, so the tag cannot fall behind the
 code. That digest is also baked into the image as a label and read back off the *running*
 container, both by `build.yml` before the run and by the report after it. The reason is that
 the alternative failures — a compose file that did not change, a container that was not
@@ -128,10 +128,9 @@ Postal.
 | **held** | The message is held: the suppression list, `send_limit`, the server mode or its suspension |
 | **in_flight** | A queue row has been claimed by a worker (`locked_at` is not empty) but is not yet finished |
 | **run_class** | `debug` — the components share hardware, unsuitable for comparing builds; `scored` — they are split apart |
-| **baseline** | The official Postal image from ghcr.io, pinned to a digest. `postal_image_source=upstream` |
-| **candidate** | Our own build, compiled from the fork in `vendor/postal/`. The default, `postal_image_source=local` |
-| **source digest** | SHA-256 over a deterministic archive of `vendor/postal/`. It names the image tag, is baked into the image as a label, and is read back off the running container so a run can prove which code produced its numbers |
-| **noise floor** | The spread between repeats of the same build. A gain smaller than it must not be declared a win |
+| **reference image** | The published Postal image from ghcr.io, pinned to a digest. `postal_image_source=upstream`; the runs in `reports/reference/` were made on it |
+| **our build** | Compiled from the source in `vendor/postal/`. The default, `postal_image_source=local` |
+| **source tree** | git's tree object id for `vendor/postal/`. It names the image tag, is baked into the image as a label, and is read back off the running container so a run can prove which code produced its numbers |
 | **sink** | The mail sink: Postfix that accepts over SMTP in the normal way and discards via `discard` |
 | **open model** | The generator keeps its sending schedule regardless of the system's response. A closed one understates the latency tail |
 | **ingress rate** | How many recipients per second Postal writes to the DB and enqueues. Measured by `ingress.yml` with the workers stopped |

@@ -3,12 +3,12 @@
 #
 # There are two sources and they answer different questions:
 #
-#   upstream — the official image from ghcr.io, resolved to an immutable digest.
-#              This is the baseline: a number obtained on it is comparable with
-#              the reference runs in reports/reference/.
-#   local    — an image built here from the fork in vendor/postal. This is the
-#              candidate: an index added to db/schema.rb or an edited worker
-#              only reaches a run through this path.
+#   upstream — the reference image from ghcr.io, resolved to an immutable digest.
+#              A number obtained on it is comparable with the runs in
+#              reports/reference/, which were made on it.
+#   local    — an image built here from our source in vendor/postal. This is what
+#              the project is for: an index added to db/schema.rb or an edited
+#              worker only reaches a run through this path.
 #
 # Whichever branch runs, it must end with postal_image_resolved set: the compose
 # template, the report and the measurement playbooks all read that single fact
@@ -20,12 +20,12 @@
       - postal_image_source in ['upstream', 'local']
     fail_msg: >-
       postal_image_source is "{{ postal_image_source }}", and the only values are
-      "upstream" (the official ghcr.io image) and "local" (built from vendor/postal).
+      "upstream" (the reference ghcr.io image) and "local" (built from vendor/postal).
 
 - name: Resolve the official image
   ansible.builtin.include_tasks: upstream.yml
   when: postal_image_source == 'upstream'
 
-- name: Build the image from the vendored fork
+- name: Build the image from our source
   ansible.builtin.include_tasks: local.yml
   when: postal_image_source == 'local'

@@ -1,7 +1,7 @@
 ---
 
 # Signing key size. The Postal bootstrap generates 1024 bits; we keep
-# that value so the baseline build matches the upstream default.
+# that value so the build matches the Postal default.
 # The size affects the cost of signing and is therefore pinned explicitly.
 postal_signing_key_bits: 1024
 
