@@ -1,22 +1,22 @@
 # Postal: a measured build
 
 A proof of concept in two halves: a reproducible bench that measures Postal honestly, and our
-own Postal build with the first optimisation in it. The bench runs on 2 vCPU machines, which
+own Postal build with the optimisations in it. The bench runs on 2 vCPU machines, which
 is enough to establish how Postal behaves and where its cost goes, and **not** enough to
 demonstrate what the optimisation is worth — that needs hardware of production size.
 
 ## Where things are
 
-| Document | What it covers |
-|---|---|
-| [RESULTS.md](RESULTS.md) | What has been measured, the numbers behind it, and an explicit list of what is not established |
-| [docs/optimisations.md](docs/optimisations.md) | Our changes to Postal: what each one does, why it is safe, whether it has been measured |
-| [docs/running.md](docs/running.md) | Deploying the bench and taking a measurement |
-| [docs/custom-builds.md](docs/custom-builds.md) | How our source becomes an image, and how a run proves which build it measured |
-| [docs/postal-internals.md](docs/postal-internals.md) | Postal internals confirmed by reading the code, with paths into it |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | How the bench is put together, and the principles behind it |
-| [POSTAL_OPTIMIZATION_GUIDE.md](POSTAL_OPTIMIZATION_GUIDE.md) | The measurement methodology and the optimisation sequence it implies |
-| [roadmap.md](roadmap.md) | What is deferred and why |
+| Document                                                     | What it covers                                                                                 |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| [RESULTS.md](RESULTS.md)                                     | What has been measured, the numbers behind it, and an explicit list of what is not established |
+| [docs/optimisations.md](docs/optimisations.md)               | Our changes to Postal: what each one does, why it is safe, whether it has been measured        |
+| [docs/running.md](docs/running.md)                           | Deploying the bench and taking a measurement                                                   |
+| [docs/custom-builds.md](docs/custom-builds.md)               | How our source becomes an image, and how a run proves which build it measured                  |
+| [docs/postal-internals.md](docs/postal-internals.md)         | Postal internals confirmed by reading the code, with paths into it                             |
+| [ARCHITECTURE.md](ARCHITECTURE.md)                           | How the bench is put together, and the principles behind it                                    |
+| [POSTAL_OPTIMIZATION_GUIDE.md](POSTAL_OPTIMIZATION_GUIDE.md) | The measurement methodology and the optimisation sequence it implies                           |
+| [roadmap.md](roadmap.md)                                     | What is deferred and why                                                                       |
 
 The Postal source we build and modify is in [vendor/postal/](vendor/postal/). Reference runs
 are in [reports/reference/](reports/reference/).
@@ -28,16 +28,16 @@ On a 2 vCPU machine the stock Postal image delivered **46-51 recipients per seco
 therefore not what stands between a modest server and five million recipients a day.
 
 What binds instead is the receiving side. Under per-IP volume limits the same Postal, on the
-same hardware, working *harder*, delivered a quarter as much: 13.3 recipients/s against 46.3,
+same hardware, working _harder_, delivered a quarter as much: 13.3 recipients/s against 46.3,
 at 5.17 delivery attempts per delivered recipient. Capacity there is bought in sending
 addresses, not in cores.
 
 And that is where the interesting part starts, because of what Postal does with a large pool
 of addresses. Full numbers and caveats in [RESULTS.md](RESULTS.md).
 
-## What we changed, and why it should help
+## What is changed, and why it should help
 
-Postal binds an outbound address to a message when the message is *accepted*, at random from
+Postal binds an outbound address to a message when the message is _accepted_, at random from
 the pool. Collecting a batch for one SMTP session then requires a match on both the recipient
 domain and that address, so a pool of N addresses divides the batch candidates by roughly N —
 and the query that collects them is covered by no index, so it stops either at a hundred rows
