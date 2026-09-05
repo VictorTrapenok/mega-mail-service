@@ -5,6 +5,28 @@ A brief record of what was done and when. The findings themselves are in
 [docs/optimisations.md](docs/optimisations.md), and what is deferred in
 [roadmap.md](roadmap.md).
 
+## 2026-09-05 (measurement pass)
+
+- **Suite green on the current tree**: 812 examples, 0 failures, and the two examples the
+  batch-collection patch adds were confirmed by name rather than by the total. Smoke passed on
+  both sides — the lab message arrived, the message to a public domain did not, and the leak
+  counters on both hosts stayed at zero. The run reports carry the same source tree
+  `250f8d03cec2` as built and as read back off the running container.
+- **The throttling figures still did not reconcile, for a second reason.** The morning's fix
+  aligned the *opening* edge of the window; the closing edge was still sampled once per figure,
+  each in its own SSH round trip, while the workers went on being refused at about fifteen a
+  second. A throttled run printed 4465 refusals, 4489 by limit and 4516 by address — growing
+  strictly in the order the tasks ran, roughly 1.5 s apart. Both edges now take **one snapshot
+  of the sink log** and every figure is read out of it. The same run then printed 4549, 4549
+  and 4549, and the reconciliation identity closed at 0 unaccounted.
+- **A fresh pair of reference runs on the current profiles.** With `send_limit` set and
+  tracking and webhooks on, the drain rate is **8.6 recipients/s** against an accepting
+  receiver and **2.0** under per-IP limits, against 46.3 and 13.3 for the earlier pair. Retry
+  amplification stays at 1.00 in the accepting arm, so nothing was wasted on refusals — each
+  delivery simply costs more. Three features moved at once and the runs do not separate them;
+  that is now in `roadmap.md`. The capacity arithmetic survived: 28 sending addresses for the
+  target rate, against 29 before, at a sixth of the throughput.
+
 ## 2026-09-05 (review pass)
 
 - **Throttling breakdowns now cover the drain window and sum across sinks.** Both breakdowns

@@ -1,0 +1,13 @@
+---
+# Where the sink log is copied at each boundary of the measured window.
+#
+# Every figure the drain reports about the receiver — deliveries, refusals, the two refusal
+# breakdowns, distinct recipients — is read out of one of these two snapshots rather than out
+# of the live log. Each of those reads is its own SSH round trip, and under a binding cap the
+# workers go on being refused between them, so reading the live log samples it at a different
+# instant per figure and the figures do not reconcile. See the comment in tasks/main.yml.
+#
+# They live beside the log so they inherit its directory and permissions, and they are removed
+# at the end of the run.
+bench_drain_sink_snapshot_before: "{{ postfix_sink_log }}.bench-window-open"
+bench_drain_sink_snapshot_after: "{{ postfix_sink_log }}.bench-window-close"

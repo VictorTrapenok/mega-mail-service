@@ -23,6 +23,26 @@
   changed_when: false
   register: drain_clock_start
 
+# One snapshot of the sink log per boundary, and every figure below is read out of it.
+#
+# The reason is that the workers keep delivering — and, under a cap, keep being refused —
+# while these tasks run, and each task is its own SSH round trip. Reading the live log once
+# per figure therefore samples it at a different instant each time, and the figures do not
+# reconcile: a throttled run produced 4465 refusals, a per-limit breakdown of 4489 and a
+# per-address breakdown of 4516, growing strictly in the order the tasks happened to run, at
+# about fifteen refusals per second and one and a half seconds apart. Nothing about that is
+# visible in the numbers themselves — they merely look like three honest counts that disagree.
+#
+# The snapshot is a plain copy rather than a byte offset because an offset does not survive a
+# redeployment of the sink, and it fails by silently yielding nothing.
+- name: Snapshot the sink log at the start of the drain
+  ansible.builtin.command:
+    argv: [cp, "{{ postfix_sink_log }}", "{{ bench_drain_sink_snapshot_before }}"]
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+
 # Every counter is read AFTER the clock, not before the workers start. The workers deliver
 # while the health check is still failing, and reading the sink here but the clock there put
 # those deliveries inside the sink delta and outside every window the database is asked
@@ -31,7 +51,7 @@
 # deliveries are now excluded from both sides instead of one.
 - name: Read the sink delivery counter before the drain
   ansible.builtin.shell:
-    cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
+    cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ bench_drain_sink_snapshot_before }} || true"
   args:
     executable: /bin/bash
   delegate_to: "{{ item }}"
@@ -49,7 +69,7 @@
   ansible.builtin.shell:
     cmd: >-
       grep -cE '(Connection concurrency|Connection rate|Message delivery request|Recipient address)[a-z ]*limit exceeded:'
-      {{ postfix_sink_log }} || true
+      {{ bench_drain_sink_snapshot_before }} || true
   args:
     executable: /bin/bash
   delegate_to: "{{ item }}"
@@ -71,7 +91,7 @@
   ansible.builtin.shell:
     cmd: >-
       grep -oE '(Connection concurrency|Connection rate|Message delivery request|Recipient address)[a-z ]*limit exceeded:'
-      {{ postfix_sink_log }}
+      {{ bench_drain_sink_snapshot_before }}
       | sed -E 's/ ?limit exceeded://' | sort | uniq -c
       | awk '{n=$1; $1=""; sub(/^ /,""); gsub(/ /,"_"); print $0"="n}' | paste -sd, - || true
   args:
@@ -85,7 +105,7 @@
 - name: Break the throttling down by source address, before the drain
   ansible.builtin.shell:
     cmd: >-
-      grep -oE '[A-Za-z ]+limit exceeded: [0-9]+ from [^ ]+' {{ postfix_sink_log }}
+      grep -oE '[A-Za-z ]+limit exceeded: [0-9]+ from [^ ]+' {{ bench_drain_sink_snapshot_before }}
       | sed -E 's/.* from //; s/^.*\[//; s/\]$//' | sort | uniq -c
       | awk '{print $2"="$1}' | paste -sd, - || true
   args:
@@ -186,9 +206,17 @@
   changed_when: false
   register: drain_clock_end
 
+- name: Snapshot the sink log at the end of the drain
+  ansible.builtin.command:
+    argv: [cp, "{{ postfix_sink_log }}", "{{ bench_drain_sink_snapshot_after }}"]
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+
 - name: Read the sink delivery counter after the drain
   ansible.builtin.shell:
-    cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
+    cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ bench_drain_sink_snapshot_after }} || true"
   args:
     executable: /bin/bash
   delegate_to: "{{ item }}"
@@ -201,7 +229,7 @@
   ansible.builtin.shell:
     cmd: >-
       grep -cE '(Connection concurrency|Connection rate|Message delivery request|Recipient address)[a-z ]*limit exceeded:'
-      {{ postfix_sink_log }} || true
+      {{ bench_drain_sink_snapshot_after }} || true
   args:
     executable: /bin/bash
   delegate_to: "{{ item }}"
@@ -227,7 +255,7 @@
   ansible.builtin.shell:
     cmd: >-
       grep -oE '(Connection concurrency|Connection rate|Message delivery request|Recipient address)[a-z ]*limit exceeded:'
-      {{ postfix_sink_log }}
+      {{ bench_drain_sink_snapshot_after }}
       | sed -E 's/ ?limit exceeded://' | sort | uniq -c
       | awk '{n=$1; $1=""; sub(/^ /,""); gsub(/ /,"_"); print $0"="n}' | paste -sd, - || true
   args:
@@ -241,7 +269,7 @@
 - name: Break the throttling down by source address, after the drain
   ansible.builtin.shell:
     cmd: >-
-      grep -oE '[A-Za-z ]+limit exceeded: [0-9]+ from [^ ]+' {{ postfix_sink_log }}
+      grep -oE '[A-Za-z ]+limit exceeded: [0-9]+ from [^ ]+' {{ bench_drain_sink_snapshot_after }}
       | sed -E 's/.* from //; s/^.*\[//; s/\]$//' | sort | uniq -c
       | awk '{print $2"="$1}' | paste -sd, - || true
   args:
@@ -263,7 +291,7 @@
 - name: Count the distinct recipients the sink accepted
   ansible.builtin.shell:
     cmd: >-
-      grep -oE 'to=<[^>]+>' {{ postfix_sink_log }} | sort -u | wc -l
+      grep -oE 'to=<[^>]+>' {{ bench_drain_sink_snapshot_after }} | sort -u | wc -l
   args:
     executable: /bin/bash
   delegate_to: "{{ item }}"
@@ -274,7 +302,7 @@
 
 - name: Count everything the sink accepted over the whole run
   ansible.builtin.shell:
-    cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ postfix_sink_log }} || true"
+    cmd: "grep -c 'status=sent ({{ postfix_sink_discard_token }})' {{ bench_drain_sink_snapshot_after }} || true"
   args:
     executable: /bin/bash
   delegate_to: "{{ item }}"
@@ -514,4 +542,17 @@
     bench_drain_ttd_p50: "{{ drain_ttd_raw.query_result[0][0].p50 | default(0) | float }}"
     bench_drain_ttd_p95: "{{ drain_ttd_raw.query_result[0][0].p95 | default(0) | float }}"
     bench_drain_ttd_p99: "{{ drain_ttd_raw.query_result[0][0].p99 | default(0) | float }}"
+  run_once: true
+
+# The snapshots have served their purpose once the facts above are pinned. They are removed
+# rather than left for the next reset to deal with: they are copies of a log that grows with
+# the queue, and a series of runs would leave one pair per run on the sink.
+- name: Remove the sink log snapshots
+  ansible.builtin.file:
+    path: "{{ item.1 }}"
+    state: absent
+  delegate_to: "{{ item.0 }}"
+  loop: "{{ groups['postfix_sinks'] | product([bench_drain_sink_snapshot_before, bench_drain_sink_snapshot_after]) | list }}"
+  loop_control:
+    label: "{{ item.0 }}: {{ item.1 | basename }}"
   run_once: true

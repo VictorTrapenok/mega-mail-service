@@ -78,6 +78,14 @@ corresponds to priority.
   being meaningful and the check has to move to distinct `X-Postal-MsgID` values.
 - **A full load matrix**: MIME sizes of 10 KB / 1 MB, 10 and 50 recipients
   per message, domain cardinality 1 / 10,000, tracking and webhooks.
+- **Attributing the cost of the production features.** Turning `send_limit`, tracking and
+  webhooks on together took the drain rate from 46.3 to 8.6 recipients/s with an accepting
+  receiver — measured, both pairs in `reports/reference/`. Which of the three dominates is not
+  known, because all three moved at once. Webhooks are the obvious suspect: the request is
+  sent by `ProcessWebhookRequestsJob` from the same worker process that sends the mail, so it
+  is an HTTP round trip on the delivery path rather than beside it. One drain run per feature
+  settles it, and the answer decides whether the pacing work or the webhook path is where the
+  next optimisation goes.
 - **The MariaDB binlog is disabled**, so disk writes are roughly half those of any
   installation with replication. It is not limiting at present, but it understates the I/O profile.
 - **Effective concurrency is well below the configured one.** A series across concurrency was

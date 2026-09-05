@@ -46,6 +46,45 @@ bind at this delivery concurrency, and the two are indistinguishable in the SMTP
 answer `421 ... too many connections` — so the bench classifies them from the receiver's log
 instead.
 
+## What production features cost, measured
+
+The two runs above were made with `send_limit` cleared and with tracking and webhooks off.
+The bench now runs all three the way production does, and the same two arms were measured
+again on that configuration. Reports:
+[reports/reference/](reports/reference/), the `-production-features` pair.
+
+| | Receiver accepts everything | Per-IP limits |
+|---|---|---|
+| Queue at start | 14 865 | 24 880 |
+| Delivery attempts per second | 8.7 | 16.9 |
+| **Delivered, recipients/s** | **8.6** | **2.0** |
+| Attempts per delivered recipient | 1.00 | 8.24 |
+| Refusals recorded by the receiver | 0 | 4549 |
+| Reconciliation discrepancy | 0.08 % | 0 % |
+
+Against 46.3 and 13.3 on the same hardware, that is a **fivefold to sixfold** drop, and it is
+not explained by anything Postal was asked to do differently on the wire: with an accepting
+receiver the retry amplification is still exactly 1.00, so no work was wasted on refusals.
+Each delivery simply became more expensive.
+
+Three things changed together and the runs do not separate them: tracking rewrites every link
+and writes rows to `links`, webhooks add an HTTP round trip per delivery **from the same
+worker process** that sends the mail, and a set `send_limit` restores the per-delivery
+`UPDATE servers`. Two further differences run the other way — these runs used our build rather
+than the upstream image, and had IP pools disabled where the earlier pair used six addresses,
+which this project measured as *faster*, not slower. Attributing the cost to one feature needs
+a run per feature and is in [roadmap.md](roadmap.md).
+
+What survives the change is the capacity arithmetic. Under the same modelled limits each
+address delivered 2.08 recipients/s against an allowance of 2.0, giving **about 28 sending
+addresses** for the target rate — against 29 before, at a sixth of the absolute throughput.
+That is the behaviour to expect from a figure that describes the receiver's policy rather than
+the sender's speed.
+
+**Single runs, no repeats**, and the accepting-receiver run did not empty its queue: 9331 of
+14 865 rows in the 900 s allowed. The rate is what it sustained; the queue outlasted the
+timeout.
+
 ## What this says about capacity planning
 
 Under the modelled limits each address delivered 2.06 recipients/s against an allowance of
@@ -164,13 +203,10 @@ Stated plainly, because the numbers above are worth only as much as their limits
   failures, and every destination throttles identically where a real mix has tiers.
 - **Queue lengths above roughly 25 000 rows are untested**, and both hot worker queries are
   uncovered by indexes.
-- **The two reference runs were made with `send_limit` cleared and with tracking and webhooks
-  off.** All three are real production work, and none of it was performed in the numbers
-  above. The bench no longer works that way — the seeding leaves `send_limit` set, so the
-  per-delivery `UPDATE servers` happens, and both profiles turn tracking and webhooks on — but
-  the reference runs predate that change and **numbers measured with the current profiles are
-  not comparable with `reports/reference/`**. A fresh baseline has to be taken before they
-  are put side by side.
+- **The first pair of reference runs was made with `send_limit` cleared and with tracking and
+  webhooks off**, so 46.3 and 13.3 recipients/s describe a Postal doing less than production
+  does. The second pair, measured with all three on, is above; the two pairs must not be put
+  side by side except as the cost of those features, and even then three of them moved at once.
 - **The MariaDB binlog is off**, so disk writes are roughly half those of any installation
   with replication. Not limiting at present, but it understates the I/O profile.
 
