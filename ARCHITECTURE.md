@@ -9,10 +9,12 @@ there are only links and general principles.
 |---|---|
 | [postal-benchmark-ansible-task.md](postal-benchmark-ansible-task.md) | Bench requirements and acceptance criteria |
 | [POSTAL_OPTIMIZATION_GUIDE.md](POSTAL_OPTIMIZATION_GUIDE.md) | Measurement methodology and the optimisation sequence |
-| [docs/postal-internals.md](docs/postal-internals.md) | Confirmed Postal 3.3.7 internals with paths into the sources |
+| [docs/postal-internals.md](docs/postal-internals.md) | Confirmed Postal internals with paths into the source |
 | [docs/custom-builds.md](docs/custom-builds.md) | Our Postal source in `vendor/postal/`, how it is built and how a run proves which build it measured |
 | [docs/optimisations.md](docs/optimisations.md) | Our changes to Postal: what each one does, why it is safe, and whether it has been measured |
-| [README.md](README.md) | Commands for running things |
+| [docs/running.md](docs/running.md) | Deploying the bench and taking a measurement |
+| [README.md](README.md) | What this is, what was measured, and what needs bigger hardware |
+| [RESULTS.md](RESULTS.md) | The findings, with what each one does and does not establish |
 | [roadmap.md](roadmap.md) | What has been deferred and why |
 
 ## What the bench consists of

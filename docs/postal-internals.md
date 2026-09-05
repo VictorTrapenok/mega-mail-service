@@ -262,8 +262,9 @@ still retried and still recorded, and the only sign is `error` reading
 
 The escape hatch is `postal.allowed_request_destinations` — hostnames or IP/CIDR ranges,
 `POSTAL_ALLOWED_REQUEST_DESTINATIONS` as a comma-separated environment variable. Any
-installation whose webhook endpoint is internal needs it, and the bench sets it for its own
-sink.
+installation whose webhook endpoint is internal needs it. The bench allows the private ranges
+wholesale because everything in it is on RFC1918; a real installation should list only its own
+endpoint, since a wider allowlist reopens the hole the guard exists to close.
 
 ## The resolver
 

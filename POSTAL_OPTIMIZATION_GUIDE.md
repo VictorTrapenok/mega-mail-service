@@ -19,9 +19,9 @@ The document is not a promise of any particular level of performance. Any claim 
 9. Do not port the Ruby code to another language wholesale without proving that this particular path is what limits performance.
 10. Measure not only throughput but also the cost of processing one million recipients.
 
-## Known customer requirements
+## Known requirements and constraints
 
-The following points come from correspondence and are for now treated as the customer's requirements or input data, not as the results of independent measurement:
+The following points come from correspondence and are for now treated as requirements or input data, not as the results of independent measurement:
 
 - The system is used for mass promotional campaigns for clients.
 - A full multi-tenant model for the new data plane is not required.
@@ -29,9 +29,9 @@ The following points come from correspondence and are for now treated as the cus
 - IP mapping, IP pools/rotation and the creation of SMTP servers are critically important features.
 - The existing product is a modified Postal fork with additional features.
 - The current architecture scales predominantly vertically.
-- The customer names the speed of the Ruby workers as the main suspected problem; the role of MariaDB has not been proven yet.
+- The speed of the Ruby workers is named as the main suspected problem; the role of MariaDB has not been proven yet.
 - A minimum of 5 million sends per day is required, with room for further growth.
-- Go is forbidden by the customer. Ruby, Rust or C++ are acceptable for new components.
+- Go is ruled out. Ruby, Rust or C++ are acceptable for new components.
 - It is desirable to keep the existing Postal and replace bottleneck components on top of it.
 - Infrastructure cost must become a separate optimisation KPI.
 
@@ -610,7 +610,7 @@ Use it if a specific mature library or existing code offers a measurable advanta
 - Keep Ruby for the existing control plane, the UI and compatibility logic until they are proven to be a bottleneck.
 - TypeScript is suitable for CI orchestration, the benchmark controller, reports and internal APIs.
 - TypeScript is not the preferred language for the hottest delivery loop itself.
-- Do not use Go, because of the customer's explicit restriction, but do study the reasons the previous Go prototype was rejected.
+- Do not use Go, which is ruled out, but do study the reasons the previous Go prototype was rejected.
 
 ## IP mapping and the creation of SMTP servers
 
@@ -779,7 +779,7 @@ An optimisation is considered useful if it increases throughput, reduces unit co
 - Perform random IP rotation without a reputation model.
 - Declare a `250 Accepted` to be inbox placement.
 
-## Mandatory questions for the customer
+## Questions that still have to be answered
 
 ### Load and SLO
 

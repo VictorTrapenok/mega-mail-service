@@ -287,8 +287,8 @@
 
 # Time to delivery, not time to acceptance. The generator's postal_accept_latency measures the
 # HTTP call and says nothing about when the recipient got the mail; under throttling the two
-# diverge by the length of the retry ladder, and it is the second number the customer's
-# customers experience. Both timestamps are Postal's own, so the row count is cross-checked
+# diverge by the length of the retry ladder, and it is the second number that the
+# recipients experience. Both timestamps are Postal's own, so the row count is cross-checked
 # against the sink log rather than trusted on its own.
 #
 # The percentiles are computed in a subquery and only then aggregated. Putting COUNT(*)

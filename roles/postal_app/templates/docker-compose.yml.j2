@@ -64,9 +64,10 @@ x-postal-common: &postal-common
 
 {# Postal refuses outbound webhook and HTTP-endpoint requests whose destination resolves to
    a private, loopback or link-local address — Postal::HTTP::AddressGuard, SSRF protection.
-   The bench's webhook sink sits on an RFC1918 address, so without an allowlist entry every
-   webhook fails with code -4 while the feature still looks enabled: the requests are
-   created, retried and recorded, and nothing ever arrives. Measured, not assumed. #}
+   The whole bench is on RFC1918 addresses, so without an allowlist every webhook fails with
+   code -4 while the feature still looks enabled: the requests are created, retried and
+   recorded, and nothing ever arrives. Measured, not assumed. The allowlist is a bench
+   setting; see the comment on postal_allowed_request_destinations. #}
 {% set webhook_destinations = ((groups['postal_load_balancers'] | default([])) | map('extract', hostvars, 'svc_ip') | list)
                               + (postal_allowed_request_destinations | default([])) %}
 {% if webhook_destinations %}

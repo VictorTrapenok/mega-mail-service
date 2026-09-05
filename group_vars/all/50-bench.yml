@@ -110,7 +110,7 @@ postfix_sink_response_delay_ms: 0
 # concurrency of 32 and the finding that an IP pool only costs throughput. Both are true
 # only against a receiver that does not throttle.
 #
-# THE NUMBERS BELOW ARE AN ASSUMPTION, NOT A MEASUREMENT. The customer has supplied neither
+# THE NUMBERS BELOW ARE AN ASSUMPTION, NOT A MEASUREMENT. Nobody has supplied either
 # the destination-domain mix nor the limits actually observed in production, so these are
 # typical values for a large MX. The report says so on every run; replace them as soon as
 # real data exists, and do not quote a derived IP count as measured until then.

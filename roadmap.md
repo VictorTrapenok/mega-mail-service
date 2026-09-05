@@ -52,8 +52,8 @@ corresponds to priority.
 ### Credibility
 
 - **The limit values are an assumption.** `bench_sink_profiles.provider` holds typical
-  numbers for a large MX because the customer has supplied neither the destination-domain mix
-  nor the throttling actually observed. Every figure derived from them, above all the count of
+  numbers for a large MX because neither the destination-domain mix nor the throttling
+  actually observed in production has been supplied. Every figure derived from them, above all the count of
   sending addresses needed for the target rate, inherits that status and the report says so.
 - **Per-destination throttling state in the sender.** Postal has none: no per-domain or
   per-IP rate accounting, no backoff shorter than the five-minute ladder, no memory that a
@@ -145,7 +145,7 @@ the baseline or requires hardware that is not available yet.
   domain is lower than with a true Zipf, so Postal's batching is exercised
   less than in reality. It is called by its name in the report.
 
-## Open questions for the customer
+## Questions that still have to be answered
 
 1. Where exactly was the current limit measured: Postal ingress, queue growth, connection
    attempts, or confirmed responses from remote MX hosts? That determines whether

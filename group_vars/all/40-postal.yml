@@ -107,9 +107,18 @@ postal_smtp_tls_enabled: false
 # with message_size_limit on the Postfix sink side.
 postal_smtp_max_message_size: 25
 
-# Extra destinations Postal may send webhooks and HTTP-endpoint requests to, on top of the
-# bench's own webhook sink, which is added automatically. Postal blocks private, loopback and
-# link-local destinations by default as SSRF protection, so anything on an RFC1918 address
-# has to be named here or the requests fail with code -4 — created, retried, recorded, and
-# never delivered.
-postal_allowed_request_destinations: []
+# Destinations Postal may send webhooks and HTTP-endpoint requests to.
+#
+# Postal refuses private, loopback and link-local destinations by default — SSRF protection
+# in Postal::HTTP::AddressGuard — and it fails quietly: the webhook_requests row is created,
+# retried and recorded, and the only sign is `error` reading "Code received was -4". Webhooks
+# look enabled and deliver nothing.
+#
+# The whole bench lives on RFC1918 addresses, so the private ranges are allowed here. This is
+# a TEST-BENCH setting and belongs nowhere near a real installation: relaxing the guard on a
+# host that also serves other traffic reopens exactly the SSRF hole it exists to close. A
+# real installation should list only its own webhook endpoint.
+postal_allowed_request_destinations:
+  - "10.0.0.0/8"
+  - "172.16.0.0/12"
+  - "192.168.0.0/16"

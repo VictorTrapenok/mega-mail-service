@@ -152,9 +152,9 @@ push, in three jobs:
    the Docker daemon lives.
 3. **publish** — builds the `full` target and pushes to the GitHub Container Registry.
    Gated on **test**: an image nobody has run the suite against is not something to put in
-   front of a customer.
+   front of anyone.
 
-Tags on `ghcr.io/<owner>/<repo>/postal`:
+Tags on `ghcr.io/victortrapenok/mega-mail-service/postal`:
 
 | Tag | Means |
 |---|---|
@@ -166,21 +166,21 @@ Tags on `ghcr.io/<owner>/<repo>/postal`:
 The image also carries `bench.source.tree` as a label, so `build.yml` and the run report
 verify a pulled image exactly as they verify a locally built one.
 
-### Handing the image to the customer
+### Handing the image over
 
 ```bash
-docker pull ghcr.io/<owner>/<repo>/postal:src-250f8d03cec2
+docker pull ghcr.io/victortrapenok/mega-mail-service/postal:src-250f8d03cec2
 docker inspect --format '{{index .Config.Labels "bench.source.tree"}}' \
-  ghcr.io/<owner>/<repo>/postal:src-250f8d03cec2
+  ghcr.io/victortrapenok/mega-mail-service/postal:src-250f8d03cec2
 ```
 
 The point of quoting the `src-` tag rather than `latest` is that it is the same string the
 report prints as "Source tree". "This image is the build that produced that report" then
-becomes something the customer can check instead of something they have to take on trust.
+becomes something the receiver can check instead of something they have to take on trust.
 
 Two things to do once, before the first handover:
 
-- **The GHCR package is private by default.** Make it public, or grant the customer read
+- **The GHCR package is private by default.** Make it public, or grant read
   access, under the repository's *Packages* settings. Until then a `docker pull` from
   outside will fail with a 403 that reads like the image does not exist.
 - **Nothing here signs the image.** If the handover needs provenance beyond a label,
@@ -192,7 +192,7 @@ reference-image path:
 ```bash
 ansible-playbook -i inventories/distributed playbooks/benchmark.yml \
   -e postal_image_source=upstream \
-  -e postal_image_repo=ghcr.io/<owner>/<repo>/postal \
+  -e postal_image_repo=ghcr.io/victortrapenok/mega-mail-service/postal \
   -e postal_image_ref=src-250f8d03cec2
 ```
 

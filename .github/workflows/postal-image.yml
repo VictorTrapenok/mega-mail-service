@@ -1,16 +1,16 @@
 ---
 # Building our Postal fork on every commit that touches it, running its test suite, and
-# publishing the image to the GitHub Container Registry so it can be handed to the customer.
+# publishing the image to the GitHub Container Registry so it can be handed over.
 #
 # The image is tagged by the SAME source identity the bench computes locally
 # (roles/postal_image/tasks/local.yml). That is what makes a handover verifiable: the tag on
 # the published image and the "Source tree" line in a run report are the same string, so the
-# customer can be told "this image is the build that produced that report" and it can be
+# receiver can be told "this image is the build that produced that report" and it can be
 # checked rather than asserted. The recipe below is duplicated from the role on purpose and
 # the two must not drift.
 #
 # Publishing is gated on the test suite. An image nobody has tested is not something to put
-# in front of a customer, and the bench does not need this workflow — it builds locally.
+# in front of anyone, and the bench does not need this workflow — it builds locally.
 
 name: postal-image
 

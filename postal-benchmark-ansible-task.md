@@ -125,7 +125,7 @@ The Postfix defaults would limit the bench before Postal does, and that would lo
 
 ## Metrics and the report
 
-The customer's only requirement is performance. The other counters are useful only for diagnosing different builds and are added as needed. At the first stage Prometheus and exporters are not deployed.
+The only stated requirement is performance. The other counters are useful only for diagnosing different builds and are added as needed. At the first stage Prometheus and exporters are not deployed.
 
 The minimum mandatory set:
 
