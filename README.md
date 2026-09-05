@@ -131,7 +131,7 @@ competing with a measurement.
 Every push builds the fork, runs Postal's test suite against it and — if the suite passes —
 publishes the image to the GitHub Container Registry as
 `ghcr.io/<owner>/<repo>/postal:src-<digest>`. That `src-` tag is the same string the report
-prints as "Source digest", which is what makes an image handed to a customer checkable
+prints as "Source tree", which is what makes an image handed to a customer checkable
 rather than merely asserted. See
 [.github/workflows/postal-image.yml](.github/workflows/postal-image.yml).
 

@@ -78,33 +78,53 @@ build with an older schema requires a state reset, not just redeploying the old 
 
 ## How the build is identified
 
-The image is tagged `postal-bench/postal:src-<first 12 hex of the source digest>`, where the
-digest is a SHA-256 over a deterministic archive of `vendor/postal/` — names sorted, mtime,
-owner and pax time headers zeroed, and **file modes normalised with `--mode=go-w`**.
-Touching a file does not change it; editing one does.
+The image is tagged `postal-bench/postal:src-<first 12 hex>`, where the hash is **git's own
+tree object id** for `vendor/postal`, computed through a throw-away index so it describes the
+working tree rather than the last commit:
 
-The mode normalisation is not cosmetic. Git records only the executable bit, so everything
-else in a file's mode comes from the umask of whoever checked the tree out: a workstation at
-umask 002 produces 664/775 and a CI runner at 022 produces 644/755. Without normalising,
-the same source hashed `df0f3784e8ed` locally and `52733cbabb11` in CI — and the whole
-point of the digest is that those two are the same string.
+```bash
+idx="$(mktemp)"; export GIT_INDEX_FILE="$idx"
+git read-tree HEAD
+git add -A -- vendor/postal
+git write-tree --prefix=vendor/postal/
+```
 
-This buys two things. A hand-maintained tag lies as soon as somebody forgets to bump it,
-and the entire point of this path is to run edited code — a content digest cannot forget.
-And because the tag changes only when the source changes, asking for a build before every
-run costs nothing when nothing was edited: the tag already exists and the build is skipped.
+Touching a file does not change it; editing one does. The real index is untouched.
+
+It got there the hard way, and the reason is worth keeping. The first version hashed a tar
+archive of the tree with all the metadata zeroed, which looked deterministic and was not: the
+same byte-identical tree hashed to `52733cbabb11` under GNU tar 1.34 and `722b34598b73` under
+1.35, so a workstation and a CI runner disagreed about what the same source was called —
+which is precisely the thing the hash exists to prevent. Before that it depended on the
+checkout umask as well. A git tree id has one definition and every git computes it the same.
+
+Two further properties fall out of using git rather than the filesystem:
+
+- **It covers exactly what a checkout covers.** `git add` honours `.gitignore`, so a
+  `vendor/bundle` left behind by somebody running `bundle install` inside the fork changes
+  neither the hash nor the image.
+- **The build context is exported from that same tree id** with `git archive`, so the bytes
+  shipped to the host are the bytes the hash describes rather than a similar set of files.
+
+The fork therefore has to live inside a git working tree; a downloaded zip will not do, and
+the roles fail with that message rather than silently hashing something else.
+
+Two things follow. A hand-maintained tag lies as soon as somebody forgets to bump it, and
+the entire point of this path is to run edited code — a content hash cannot forget. And
+because the tag changes only when the source changes, asking for a build before every run
+costs nothing when nothing was edited: the tag already exists and the build is skipped.
 
 Use `-e postal_build_force=true` to rebuild anyway (needed after changing the base image or
 clearing the layer cache, not to pick up source edits).
 
 ## How a run proves which build it measured
 
-The digest is baked into the image as the label `bench.source.sha256`, and it is read back
+The tree id is baked into the image as the label `bench.source.tree`, and it is read back
 in two places, both off the **running container** rather than off the image or the tag:
 
-- `build.yml` ends with an assertion that the running worker carries the digest of the
+- `build.yml` ends with an assertion that the running worker carries the tree id of the
   current working tree, and fails the run if it does not.
-- The report prints `Source digest (built)` and `Source digest (running)` side by side and
+- The report prints `Source tree (built)` and `Source tree (running)` side by side and
   adds a warning row if they disagree or if the label is absent.
 
 A tag says what someone meant to deploy. A label on a running container says what ran. The
@@ -119,11 +139,11 @@ ansible-playbook -i inventories/distributed playbooks/rspec.yml \
   -e postal_specs_args=spec/models/queued_message_spec.rb
 ```
 
-The `postal_specs` role ships the same deterministic archive the image build uses, builds the
-`ci` target on the target host and runs the suite against a throw-away MariaDB from Postal's
-own compose file, then tears it down. Because the archive is the same, the suite result and a
-benchmark result carry the same source digest and can be attributed to one identical tree
-rather than to two builds that were probably the same.
+The `postal_specs` role computes the source identity the same way the image build does and
+exports the source from that same tree id, builds the `ci` target on the target host and runs
+the suite against a throw-away MariaDB from Postal's own compose file, then tears it down.
+Because the identity is computed identically, a suite result and a benchmark result name one
+identical tree rather than two that were probably the same.
 
 Where it runs is the `postal_specs` inventory group, and in the measurement inventory that is
 the auxiliary machine, not the system under test — a two-core bundle install has no business
@@ -157,19 +177,19 @@ Tags on `ghcr.io/<owner>/<repo>/postal`:
 | `latest` | Default branch only |
 | `v*` | Carried through from a git tag |
 
-The image also carries `bench.source.sha256` as a label, so `build.yml` and the run report
+The image also carries `bench.source.tree` as a label, so `build.yml` and the run report
 verify a pulled image exactly as they verify a locally built one.
 
 ### Handing the image to the customer
 
 ```bash
-docker pull ghcr.io/<owner>/<repo>/postal:src-52733cbabb11
-docker inspect --format '{{index .Config.Labels "bench.source.sha256"}}' \
-  ghcr.io/<owner>/<repo>/postal:src-52733cbabb11
+docker pull ghcr.io/<owner>/<repo>/postal:src-250f8d03cec2
+docker inspect --format '{{index .Config.Labels "bench.source.tree"}}' \
+  ghcr.io/<owner>/<repo>/postal:src-250f8d03cec2
 ```
 
 The point of quoting the `src-` tag rather than `latest` is that it is the same string the
-report prints as "Source digest". "This image is the build that produced that report" then
+report prints as "Source tree". "This image is the build that produced that report" then
 becomes something the customer can check instead of something they have to take on trust.
 
 Two things to do once, before the first handover:
@@ -187,7 +207,7 @@ upstream reference:
 ansible-playbook -i inventories/distributed playbooks/benchmark.yml \
   -e postal_image_source=upstream \
   -e postal_image_repo=ghcr.io/<owner>/<repo>/postal \
-  -e postal_image_ref=src-52733cbabb11
+  -e postal_image_ref=src-250f8d03cec2
 ```
 
 ## Updating the fork from upstream

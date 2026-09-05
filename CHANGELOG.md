@@ -8,8 +8,8 @@
   Docker and run Postal's rspec suite against a throw-away MariaDB, then tear it down. It
   ships the same deterministic archive the image build uses, so a suite result and a
   benchmark result carry the same source digest.
-- Result of the first run: **812 examples, 0 failures** on source `52733cbabb11`, and both
-  new examples confirmed to run by name rather than inferred from the total. The batch-key
+- Result of the first run: **812 examples, 0 failures**, and both new examples confirmed to
+  run by name rather than inferred from the total. The batch-key
   patch is correct; nothing about its speed has been measured.
 - New `postal_specs` inventory group in both inventories. In the measurement inventory it
   points at `aux`, not the system under test: the build is a two-core bundle install, and on
@@ -22,10 +22,14 @@
   rspec suite against a `ci` build, and on success pushes the `full` image to GHCR as
   `ghcr.io/<owner>/<repo>/postal` tagged `src-<digest>`, `sha-<commit>`, `latest` on the
   default branch and `v*` from git tags. Publishing is gated on the suite.
-- The digest recipe gained `--mode=go-w`. Git records only the executable bit, so the rest
-  of a file's mode came from the checkout umask: the same source hashed `df0f3784e8ed` on a
-  workstation (002) and `52733cbabb11` on a runner (022). Without this the tag CI publishes
-  could not be shown to be the build the bench measured.
+- **The source identity is now git's tree object id for `vendor/postal`**, taken through a
+  throw-away index so it describes the working tree. It replaced a hash of a
+  metadata-stripped tar archive, which was not in fact deterministic: it depended first on
+  the checkout umask and then, after that was normalised, on the tar version — GNU tar 1.34
+  and 1.35 hashed a byte-identical tree to `52733cbabb11` and `722b34598b73`, so the first
+  published image carried a tag the bench would never produce. Caught by comparing the CI
+  run against the local one. The build context is now exported from the same tree id with
+  `git archive`, and the image label is `bench.source.tree`.
 - `vendor/` excluded from yamllint and ansible-lint — the fork is a Rails application and
   every finding in it would be noise against the diff we own.
 

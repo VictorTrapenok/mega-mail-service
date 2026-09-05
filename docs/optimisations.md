@@ -85,8 +85,8 @@ keep the old plan.
   The existing upstream specs use a batch key of `"1234"`, which does not satisfy the
   invariant, so they exercise the unchanged path.
 
-**Postal's suite passes on this tree: 812 examples, 0 failures**, run on source
-`52733cbabb11` via `playbooks/rspec.yml`. The two new examples were confirmed to run by
+**Postal's suite passes on this tree: 812 examples, 0 failures** — both locally via
+`playbooks/rspec.yml` and in CI. The two new examples were confirmed to run by
 name rather than inferred from the total:
 
 ```

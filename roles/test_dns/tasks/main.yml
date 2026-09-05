@@ -16,7 +16,7 @@
     mode: "0644"
   notify: Restart CoreDNS
 
-- name: Deploy the {{ postal_test_domain }} zone
+- name: Deploy the zone for {{ postal_test_domain }}
   ansible.builtin.template:
     src: zone.j2
     dest: "{{ test_dns_dir }}/{{ postal_test_domain }}.zone"

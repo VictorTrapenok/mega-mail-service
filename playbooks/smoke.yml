@@ -19,7 +19,7 @@
       ansible.builtin.set_fact:
         # The parentheses are mandatory: the filter binds tighter than exponentiation,
         # and without them the expression would read as 10 ** (9 | random).
-        smoke_tag: "smoke{{ (10 ** 9) | random }}"
+        smoke_tag: "smoke{{ (10**9) | random }}"
 
 - name: Check the end-to-end path of a message
   hosts: load_generators

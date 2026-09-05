@@ -127,7 +127,7 @@
   ansible.builtin.shell:
     cmd: >-
       docker inspect
-      --format '{% raw %}{{index .Config.Labels "bench.source.sha256"}}{% endraw %}'
+      --format '{% raw %}{{index .Config.Labels "bench.source.tree"}}{% endraw %}'
       $(docker compose -f {{ postal_dir }}/docker-compose.yml ps -q worker1) 2>/dev/null || echo ''
   args:
     executable: /bin/bash

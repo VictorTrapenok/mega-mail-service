@@ -32,8 +32,11 @@ postal_build_upstream_commit: "d038eaa8c763d3cafa797ccd6f773d53470bd336"
 postal_build_image_repo: "postal-bench/postal"
 
 # Where the fork lives on the CONTROLLER. Every playbook of this project sits in playbooks/,
-# so the repository root is one level up from playbook_dir.
-postal_build_source_dir: "{{ playbook_dir }}/../vendor/postal"
+# so the repository root is one level up from playbook_dir. The path is kept split because
+# the source identity is computed by git, which needs the repository and a path inside it.
+postal_build_repo_dir: "{{ playbook_dir }}/.."
+postal_build_source_rel: "vendor/postal"
+postal_build_source_dir: "{{ postal_build_repo_dir }}/{{ postal_build_source_rel }}"
 
 # Re-pull the base image before building. Off by default: ruby:3.4.6-slim-bookworm is a
 # moving tag, and a series that is supposed to differ only in our source must not have its

@@ -48,8 +48,8 @@ Postal {% if postal_image_source == 'local' %}{{ postal_build_upstream_ref }} fo
 {% set src_built = postal_build_source_digest | default('') | trim %}
 {% set src_running = running_source_digest.stdout | default('') | trim %}
 | Fork base | `{{ postal_build_upstream_ref }}` ({{ postal_build_upstream_commit[:12] }}) |
-| Source digest (built) | `{{ src_built if src_built else 'undetermined: the fact cache is empty' }}` |
-| Source digest (running) | `{{ src_running if src_running else 'absent — the running image carries no bench label' }}` |
+| Source tree (built) | `{{ src_built if src_built else 'undetermined: the fact cache is empty' }}` |
+| Source tree (running) | `{{ src_running if src_running else 'absent — the running image carries no bench label' }}` |
 {% if not src_running %}
 | | **The running image was not built by this bench.** The tag it was deployed under may say otherwise; the label does not lie. Treat this run as measuring an unknown build. |
 {% elif src_built and src_running != src_built %}

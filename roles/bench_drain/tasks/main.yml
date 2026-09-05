@@ -279,7 +279,7 @@
          AND timestamp >= {{ drain_clock_start.stdout | trim | int }}
          AND COALESCE(output, '') NOT LIKE '%too many connections%'
          AND COALESCE(output, '') NOT LIKE '%too much mail%'
-         AND COALESCE(output, '') NOT LIKE '%too many recipients%' 
+         AND COALESCE(output, '') NOT LIKE '%too many recipients%'
   register: drain_softfail_raw
   changed_when: false
   delegate_to: "{{ groups['postal_main_db'] | first }}"

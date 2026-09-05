@@ -56,6 +56,11 @@ corresponds to priority.
   anyone with a test host, but the suite still cannot run on a workstation: it needs Ruby
   3.4.6, a MySQL server and Docker at once. A devcontainer would close that too. Lower
   priority now that a one-line patch can be checked in a few minutes against a test host.
+- **The var-naming skip in `.ansible-lint`.** `var-naming[no-role-prefix]` is skipped because
+  it fires 113 times and the convention it wants is wrong for roles that publish facts other
+  plays consume. The genuinely role-local registers among those 113 could still be renamed,
+  which would let the rule come back on; it is a mechanical change across every role with a
+  real chance of missing a reference, so it waits for a quiet moment.
 - **Signing the published image.** The handover currently rests on a label, which proves
   which source an image was built from but not who built it. cosign or GitHub attestations
   if provenance ever has to survive an argument.
