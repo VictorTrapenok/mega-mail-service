@@ -58,6 +58,44 @@
   changed_when: false
   register: drain_throttle_before
 
+# The same two breakdowns, taken BEFORE the drain, so that every throttling figure in the
+# report covers one and the same window. The scalar counter above is a delta across the drain;
+# a breakdown read over the whole log does not have to agree with it, and did not — a
+# reference run printed 16 900 refusals beside a per-limit breakdown summing to 16 929,
+# because the workers are refused a little during their own startup, before the clock is
+# taken. Subtracting the same breakdown taken here removes exactly those and nothing else.
+#
+# The commands are byte-identical to their counterparts after the drain. They have to be: a
+# pattern that differs between the two ends turns the subtraction into noise.
+- name: Break the throttling down by the limit that was hit, before the drain
+  ansible.builtin.shell:
+    cmd: >-
+      grep -oE '(Connection concurrency|Connection rate|Message delivery request|Recipient address)[a-z ]*limit exceeded:'
+      {{ postfix_sink_log }}
+      | sed -E 's/ ?limit exceeded://' | sort | uniq -c
+      | awk '{n=$1; $1=""; sub(/^ /,""); gsub(/ /,"_"); print $0"="n}' | paste -sd, - || true
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: drain_throttle_by_reason_before
+
+- name: Break the throttling down by source address, before the drain
+  ansible.builtin.shell:
+    cmd: >-
+      grep -oE '[A-Za-z ]+limit exceeded: [0-9]+ from [^ ]+' {{ postfix_sink_log }}
+      | sed -E 's/.* from //; s/^.*\[//; s/\]$//' | sort | uniq -c
+      | awk '{print $2"="$1}' | paste -sd, - || true
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['postfix_sinks'] }}"
+  run_once: true
+  changed_when: false
+  register: drain_throttle_by_ip_before
+
 # The denominator is the ready rows, not all of them. The worker will not take deferred ones
 # until retry_after expires, so including them in the drain rate would mean
 # dividing work by a time during which it could not have been done.
@@ -172,15 +210,20 @@
   changed_when: false
   register: drain_throttle_after
 
-# Which source address each refusal was aimed at. The warning line carries the client address
-# in a fixed position, so this is the one per-IP figure that does not depend on Postal's own
-# records. It is read over the whole file: reset.yml truncates the sink log before every run,
-# and a line offset into it does not survive a redeployment of the sink.
-# Which limit was hit. This has to come from the log, not from the reply Postal stored: smtpd
+# The closing end of both breakdowns. Each is read over the whole file and reduced to the
+# drain window further down by subtracting its counterpart from before the drain — a line or
+# byte offset into the log would be cheaper, but it does not survive a redeployment of the
+# sink, and it fails by silently yielding nothing.
+#
+# Which limit was hit has to come from the log, not from the reply Postal stored: smtpd
 # answers "421 ... too many connections" for BOTH the concurrency cap and the connection RATE
 # cap, so the reply cannot tell the two apart and a breakdown built from it silently files
 # every rate rejection under concurrency. The log warning names the limit outright.
-- name: Break the throttling down by the limit that was hit
+#
+# Which source address each refusal was aimed at comes from the same lines: the warning
+# carries the client address in a fixed position, so this is the one per-IP figure that does
+# not depend on Postal's own records.
+- name: Break the throttling down by the limit that was hit, after the drain
   ansible.builtin.shell:
     cmd: >-
       grep -oE '(Connection concurrency|Connection rate|Message delivery request|Recipient address)[a-z ]*limit exceeded:'
@@ -195,7 +238,7 @@
   changed_when: false
   register: drain_throttle_by_reason
 
-- name: Break the throttling down by source address
+- name: Break the throttling down by source address, after the drain
   ansible.builtin.shell:
     cmd: >-
       grep -oE '[A-Za-z ]+limit exceeded: [0-9]+ from [^ ]+' {{ postfix_sink_log }}
@@ -374,6 +417,49 @@
           else drain_check.query_result[0][0].n) | int }}
   run_once: true
 
+# Both throttling breakdowns, reduced to the drain window and summed across sinks.
+#
+# The reduction is written once and applied to both rather than spelled out twice, because a
+# breakdown that stopped agreeing with the other one would be indistinguishable from a finding.
+#
+# It fixes two things that the previous join of the per-sink strings got wrong. The counts
+# covered the whole log while the scalar counter printed next to them in the report covers the
+# drain window, so the two never had to agree — and did not: a reference run printed 16 900
+# refusals beside a per-limit breakdown summing to 16 929. And with more than one host in
+# `postfix_sinks`, joining meant the same key arrived twice and the report rendered it as two
+# rows instead of one sum, which is exactly the moment a second sink gets added: when the
+# first one is suspected of being the bottleneck.
+#
+# A key whose delta is not positive is dropped. It was hit before the window opened — during
+# the workers' own startup — and it is not a finding of this run.
+- name: Reduce the throttling breakdowns to the drain window
+  ansible.builtin.set_fact:
+    "{{ item.name }}": >-
+      {%- set totals = {} -%}
+      {%- for rows, sign in [(item.after, 1), (item.before, -1)] -%}
+      {%-   for host in rows -%}
+      {%-     for pair in host.stdout.strip().split(',') if pair -%}
+      {%-       set kv = pair.rsplit('=', 1) -%}
+      {%-       set _ = totals.update({kv[0]: totals.get(kv[0], 0) + sign * (kv[1] | int)}) -%}
+      {%-     endfor -%}
+      {%-   endfor -%}
+      {%- endfor -%}
+      {%- set out = [] -%}
+      {%- for key, n in totals | dictsort if n > 0 -%}
+      {%-   set _ = out.append(key ~ '=' ~ n) -%}
+      {%- endfor -%}
+      {{ out | join(',') }}
+  loop:
+    - name: bench_drain_throttled_by_reason
+      after: "{{ drain_throttle_by_reason.results }}"
+      before: "{{ drain_throttle_by_reason_before.results }}"
+    - name: bench_drain_throttled_by_ip
+      after: "{{ drain_throttle_by_ip.results }}"
+      before: "{{ drain_throttle_by_ip_before.results }}"
+  loop_control:
+    label: "{{ item.name }}"
+  run_once: true
+
 - name: Pin the drain results
   ansible.builtin.set_fact:
     bench_drain_start: "{{ drain_clock_start.stdout | trim }}"
@@ -400,12 +486,6 @@
     bench_drain_throttled: >-
       {{ (drain_throttle_after.results | map(attribute='stdout') | map('trim') | map('int') | sum)
          - (drain_throttle_before.results | map(attribute='stdout') | map('trim') | map('int') | sum) }}
-    bench_drain_throttled_by_ip: >-
-      {{ drain_throttle_by_ip.results | map(attribute='stdout') | map('trim')
-         | select('!=', '') | join(',') }}
-    bench_drain_throttled_by_reason: >-
-      {{ drain_throttle_by_reason.results | map(attribute='stdout') | map('trim')
-         | select('!=', '') | join(',') }}
     bench_drain_softfail_other: "{{ drain_softfail_raw.query_result[0][0].n | default(0) | int }}"
     # Every attempt, whatever its outcome. The dividend of retry amplification.
     bench_drain_attempts: >-

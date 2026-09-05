@@ -5,6 +5,34 @@ A brief record of what was done and when. The findings themselves are in
 [docs/optimisations.md](docs/optimisations.md), and what is deferred in
 [roadmap.md](roadmap.md).
 
+## 2026-09-05 (review pass)
+
+- **Throttling breakdowns now cover the drain window and sum across sinks.** Both breakdowns
+  — by limit and by source address — were counted over the whole sink log while the refusal
+  total printed beside them in the report was a delta across the drain. The two therefore
+  never had to agree, and did not: the reference run shows 16 900 refusals against a per-limit
+  breakdown summing to 16 929, the difference being refusals the workers collect during their
+  own startup. Each breakdown is now also taken before the drain and subtracted per key. The
+  same reduction fixes a second fault that had not fired yet: the per-sink strings were joined
+  end to end, so with more than one host in `postfix_sinks` a repeated key would have been
+  rendered as two rows instead of one sum — which would first have happened exactly when a
+  second sink was added because the first was suspected of being the bottleneck.
+- **The plan check for the batch-collection patch explained the wrong statement.**
+  `docs/optimisations.md` gave an `EXPLAIN SELECT`, but the worker runs `update_all` — an
+  `UPDATE`, planned separately, which an obliging `SELECT` plan says nothing about. Replaced
+  with `EXPLAIN UPDATE`, the second query alongside it, and `ANALYZE UPDATE` for the case
+  where estimates and actual rows disagree.
+- **Two documents had gone stale against the code.** `RESULTS.md` still said `send_limit` is
+  cleared by the seeding and that tracking and webhooks are not wired, all three of which
+  changed earlier the same day; the bullet now says what it means — that the reference runs
+  were made that way and are not comparable with runs on the current profiles. `roadmap.md`
+  claimed under "known limitations" that the roles for assigning sending addresses and
+  checking them against the database do not exist, twenty lines below a bullet describing
+  `postal_sending_ips` doing exactly that.
+- **The lint job no longer advertises a secret scan it does not run.** Its header had claimed
+  one since it was written. Removed, with the reason it is not trivial recorded, and the work
+  itself moved to `roadmap.md`.
+
 ## 2026-09-05
 
 - **Presentation pass.** README cut from 373 lines to 150 and rewritten as what the work is:

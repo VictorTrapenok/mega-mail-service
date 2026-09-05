@@ -164,8 +164,15 @@ Stated plainly, because the numbers above are worth only as much as their limits
   failures, and every destination throttles identically where a real mix has tiers.
 - **Queue lengths above roughly 25 000 rows are untested**, and both hot worker queries are
   uncovered by indexes.
-- **`send_limit` is disabled by the seeding, the MariaDB binlog is off, tracking and webhooks
-  are not wired.** Each of those is real production work that these runs do not perform.
+- **The two reference runs were made with `send_limit` cleared and with tracking and webhooks
+  off.** All three are real production work, and none of it was performed in the numbers
+  above. The bench no longer works that way — the seeding leaves `send_limit` set, so the
+  per-delivery `UPDATE servers` happens, and both profiles turn tracking and webhooks on — but
+  the reference runs predate that change and **numbers measured with the current profiles are
+  not comparable with `reports/reference/`**. A fresh baseline has to be taken before they
+  are put side by side.
+- **The MariaDB binlog is off**, so disk writes are roughly half those of any installation
+  with replication. Not limiting at present, but it understates the I/O profile.
 
 ## Open questions
 

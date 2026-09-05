@@ -1,5 +1,11 @@
 ---
-# Cheap gate: syntax, inventory parsing and a check for forbidden secrets.
+# Cheap gate: YAML style, Ansible style, inventory parsing and playbook syntax.
+#
+# It does NOT check for committed secrets. The lab credentials in group_vars are in the
+# repository on purpose (see 90-lab-credentials.yml), so a scan would have to distinguish
+# those from the fork deploy key, the registry credentials and the production DKIM keys that
+# .gitignore keeps out — and a scan that is not written to make that distinction would either
+# fail on every run or pass on everything. Until it is written, this job does not claim it.
 #
 # There is no full benchmark run here and none is planned: the runner does not have
 # enough resources, and outbound TCP/25 is blocked by GitHub at the platform level.

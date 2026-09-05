@@ -120,10 +120,15 @@ of ten thousand cached rows disappears against the ~96 ms a message costs.
 ### How to verify it before trusting it
 
 **First, that MySQL actually uses the index.** The optimiser is free to ignore it, and if it
-does the patch buys nothing:
+does the patch buys nothing.
+
+Explain the statement the worker actually runs, which is an `UPDATE`, not a `SELECT`. The two
+are planned separately and they do not have to agree: the claim is
+`ActiveRecord::Relation#update_all`, and an `EXPLAIN SELECT` that seeks happily is no evidence
+at all about the `UPDATE` beside it. MariaDB explains both.
 
 ```sql
-EXPLAIN SELECT id FROM queued_messages
+EXPLAIN UPDATE queued_messages SET locked_by = 'x', locked_at = NOW()
  WHERE batch_key = 'outgoing-example.com' AND domain = 'example.com'
    AND ip_address_id = 42
    AND locked_by IS NULL AND locked_at IS NULL
@@ -131,9 +136,24 @@ EXPLAIN SELECT id FROM queued_messages
  LIMIT 100;
 ```
 
-`key` must read `index_queued_messages_on_domain`. If it reads `NULL` with `type: ALL`, the
-optimiser refused: run `ANALYZE TABLE queued_messages` and look again. If it still refuses,
-the patch is inert and the alternatives are in "Not done yet" below.
+Then the second query, which reads back what was just locked and has the same problem:
+
+```sql
+EXPLAIN SELECT id FROM queued_messages
+ WHERE batch_key = 'outgoing-example.com' AND domain = 'example.com'
+   AND ip_address_id = 42
+   AND locked_by = 'x' AND locked_at = '2026-01-01 00:00:00'
+ LIMIT 100;
+```
+
+In both, `key` must read `index_queued_messages_on_domain`. If it reads `NULL` with
+`type: ALL`, the optimiser refused: run `ANALYZE TABLE queued_messages` and look again. If it
+still refuses, the patch is inert and the alternatives are in "Not done yet" below.
+
+`ANALYZE UPDATE` — MariaDB's form that executes the statement and prints estimated rows beside
+actual ones — settles it more firmly than `EXPLAIN` does, because the plan is chosen from
+estimates and it is the actual row count that says whether the scan happened. Run it inside a
+transaction and roll back, or the rows really are locked.
 
 **Then, that it is worth anything.** On the bench, with the arms that reproduce the regime —
 a queue of 10⁵ or more rows and a pool of many addresses. Neither exists yet; both are in

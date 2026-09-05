@@ -48,6 +48,12 @@ corresponds to priority.
 - **Signing the published image.** The handover currently rests on a label, which proves
   which source an image was built from but not who built it. cosign or GitHub attestations
   if provenance ever has to survive an argument.
+- **A secret scan in CI.** The lint job used to advertise one in its header and never had
+  one; the claim has been removed rather than left standing. Writing it means teaching the
+  scan the distinction the repository actually makes: the lab credentials in
+  `group_vars/all/90-lab-credentials.yml` are committed deliberately, while the fork deploy
+  key, the registry credentials and production DKIM keys must never be. gitleaks with an
+  allowlist for that one file is the obvious shape.
 
 ### Credibility
 
@@ -134,9 +140,13 @@ the baseline or requires hardware that is not available yet.
   the buffer pool warmth, the tablespace layout and the AUTO_INCREMENT values.
   For a series of five repeats this must be closed by restoring the MariaDB
   volume from a snapshot.
-- **IP pools have not been verified end to end.** The mechanics are accounted for (host networking,
-  seeding of pools, HELO in the zone), but the roles for assigning addresses to the interface
-  and for checking the "address in the DB ↔ address on the host" correspondence do not exist yet.
+- **IP pools are verified for one host only.** The `postal_sending_ips` role now assigns the
+  addresses to the interface and proves each one with a real `MAIL FROM` / `RCPT TO` rather
+  than a ping, the seeding creates the matching `ip_addresses` rows from the same list, and
+  the report shows the delivery breakdown per address — so the "address in the DB ↔ address on
+  the host" correspondence is checked. What is still open is the multi-host case, listed under
+  "IP pools across several hosts" above: a worker may only bind its own addresses, so the
+  queue partitions by host and an idle host cannot help a busy one.
 - **The report prints variables rather than the actual container configuration.**
   The digest of the running image and the MariaDB variables are read back from the hosts,
   everything else comes from `group_vars`. A discrepancy is possible if someone

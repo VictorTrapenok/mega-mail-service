@@ -285,6 +285,10 @@ much volume the receiver allows. Postal reuses a session for only 1.4 to 3.35 me
 connection-rate cap binds well below the message-rate one unless it is set several times
 higher — which is why the `provider` profile sets it high on purpose.
 
+It covers the same window as the refusal total above and is reduced across every sink, so the
+column below sums to that total. A disagreement between the two is a fault in the bench, not
+a property of the run.
+
 | Limit | Rejections |
 |---|---|
 {% for pair in bench_drain_throttled_by_reason.split(',') | select('!=', '') | sort %}
@@ -297,6 +301,7 @@ higher — which is why the `provider` profile sets it high on purpose.
 
 Taken from the receiver's own log, so this is independent of Postal. An address that appears
 here is one whose quota was exhausted; an address that does not is one with headroom left.
+Counted over the drain window, like the total above, and summed across every sink.
 
 | Address | Refusals |
 |---|---|
