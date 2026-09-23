@@ -7,7 +7,7 @@ in [docs/engineering-log.md](docs/engineering-log.md).
 ## v1.0.0 — 2026-09-23: phase 1 complete
 
 - Project documentation finalised: results-first README, Postal performance FAQ, Postal
-  tuning checklist, [TESTING.md](TESTING.md), MIT licence, consultation request template,
+  tuning checklist, [TESTING.md](TESTING.md), MIT licence, LinkedIn contact links,
   GitHub Pages configuration.
 - Corrected the SMTP reply classification in the docs: `500–504` and `530–535` are soft
   failures in Postal, while `553` is a hard failure.

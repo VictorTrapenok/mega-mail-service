@@ -6,8 +6,8 @@ from reading the Postal source. The link after each one leads to the evidence. F
 for Postal 3.3.x on a 2 vCPU machine, 100 KB messages, one recipient per message, unless
 stated otherwise.
 
-If your installation shows one of these symptoms and you want it looked at, see
-[Work with me](../README.md#work-with-me).
+If your installation shows one of these symptoms and you want it looked at,
+[contact me on LinkedIn](https://www.linkedin.com/in/victor-trapenok/).
 
 ## Throughput and capacity
 

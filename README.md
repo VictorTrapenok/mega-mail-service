@@ -3,6 +3,7 @@
 [![lint](https://github.com/VictorTrapenok/mega-mail-service/actions/workflows/lint.yml/badge.svg)](https://github.com/VictorTrapenok/mega-mail-service/actions/workflows/lint.yml)
 [![postal-image](https://github.com/VictorTrapenok/mega-mail-service/actions/workflows/postal-image.yml/badge.svg)](https://github.com/VictorTrapenok/mega-mail-service/actions/workflows/postal-image.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![LinkedIn: Victor Trapenok](https://img.shields.io/badge/LinkedIn-Victor%20Trapenok-0A66C2)](https://www.linkedin.com/in/victor-trapenok/)
 
 **How fast can [Postal](https://github.com/postalserver/postal) actually send email, and what
 slows it down?** This repository answers that with measurements rather than opinions. It
@@ -15,7 +16,7 @@ against the source code, and our own Postal build with the first optimisation in
 > hardware or production data and is listed in [roadmap.md](roadmap.md).
 >
 > **Running Postal and hitting a ceiling?** I take on Postal performance work on an hourly
-> basis — see [Work with me](#work-with-me).
+> basis. **[Contact me on LinkedIn](https://www.linkedin.com/in/victor-trapenok/)**.
 
 ## Key results
 
@@ -127,8 +128,9 @@ fails quietly. See [docs/postal-internals.md](docs/postal-internals.md#webhooks-
 ## Work with me
 
 This project was built and documented by **Victor Trapenok**
-([@VictorTrapenok](https://github.com/VictorTrapenok)). I am available for hourly consulting
-and contract work on Postal and high-volume email delivery:
+([LinkedIn](https://www.linkedin.com/in/victor-trapenok/)). I am available for hourly
+consulting and contract work on Postal and high-volume email delivery, and open to job offers
+in this area:
 
 - **Performance audit of a Postal installation**: queue and query plans on your data (a
   read-only replica is enough), worker and database settings, where the ceiling really is.
@@ -139,10 +141,8 @@ and contract work on Postal and high-volume email delivery:
   measured.
 - **Scaling out**: sharding across independent installations, IP pools across hosts.
 
-**How to reach me:** open an issue using the
-[Postal performance consultation](https://github.com/VictorTrapenok/mega-mail-service/issues/new?template=consultation.yml)
-template, or use the contact details on my [GitHub profile](https://github.com/VictorTrapenok).
-Describe your daily volume, number of sending IPs and the symptom. The list of questions I
+**[→ Contact me on LinkedIn](https://www.linkedin.com/in/victor-trapenok/)** for consulting, contract work or a job offer.
+Mention your daily volume, number of sending IPs and the symptom. The list of questions I
 start from is in [docs/postal-optimization-guide.md](docs/postal-optimization-guide.md#questions-that-still-have-to-be-answered).
 
 ## Quick start

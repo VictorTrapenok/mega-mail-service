@@ -118,5 +118,5 @@ outside.
 
 ---
 
-If you would rather have someone go through this on your installation, see
-[Work with me](../README.md#work-with-me).
+If you would rather have someone go through this on your installation,
+[contact me on LinkedIn](https://www.linkedin.com/in/victor-trapenok/).

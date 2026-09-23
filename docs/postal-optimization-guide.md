@@ -6,7 +6,7 @@ This document records the original requirements, the confirmed characteristics o
 
 The document is not a promise of any particular level of performance. Any claim about a bottleneck or a gain must be backed by a reproducible test.
 
-If you run Postal in production and want to apply it to your installation, start from [Questions that still have to be answered](#questions-that-still-have-to-be-answered): it is the discovery checklist for any Postal performance engagement.
+If you run Postal in production and want to apply it to your installation, start from [Questions that still have to be answered](#questions-that-still-have-to-be-answered): it is the discovery checklist for any Postal performance engagement. To have it applied to your installation, [contact me on LinkedIn](https://www.linkedin.com/in/victor-trapenok/).
 
 ## Core engineering rules
 

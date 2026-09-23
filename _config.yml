@@ -7,6 +7,11 @@ description: >-
   Benchmark, bottlenecks and optimisation of the Postal mail server: throughput, delivery
   queue, IP pools, receiver limits, worker tuning and a reproducible Ansible load-testing bench.
 author: Victor Trapenok
+social:
+  name: Victor Trapenok
+  links:
+    - https://www.linkedin.com/in/victor-trapenok/
+    - https://github.com/VictorTrapenok
 url: https://victortrapenok.github.io
 baseurl: /mega-mail-service
 lang: en
