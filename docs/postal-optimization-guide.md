@@ -1,10 +1,12 @@
-# Postal Performance Optimization Guide
+# Postal performance optimization guide: methodology and roadmap
 
 ## Purpose of this document
 
 This document records the original requirements, the confirmed characteristics of Postal, the rules for load testing and the recommended optimisation sequence. It should be maintained alongside the code and updated after every confirmed measurement or architectural decision.
 
 The document is not a promise of any particular level of performance. Any claim about a bottleneck or a gain must be backed by a reproducible test.
+
+If you run Postal in production and want to apply it to your installation, start from [Questions that still have to be answered](#questions-that-still-have-to-be-answered): it is the discovery checklist for any Postal performance engagement. To have it applied to your installation, [contact me on LinkedIn](https://www.linkedin.com/in/victor-trapenok/).
 
 ## Core engineering rules
 
@@ -21,9 +23,9 @@ The document is not a promise of any particular level of performance. Any claim 
 
 ## Known requirements and constraints
 
-The following points come from correspondence and are for now treated as requirements or input data, not as the results of independent measurement:
+The project started from a brief for a production Postal installation. Its points are treated as requirements or input data, not as the results of independent measurement:
 
-- The system is used for mass promotional campaigns for clients.
+- The system is used for high-volume promotional campaigns.
 - A full multi-tenant model for the new data plane is not required.
 - The state of every recipient must be stored: sent, not sent, deferred, finally rejected, and the reason.
 - IP mapping, IP pools/rotation and the creation of SMTP servers are critically important features.
@@ -39,12 +41,12 @@ The following points come from correspondence and are for now treated as require
 
 The following questions must be resolved before the production SLO is pinned down:
 
-- The correspondence quotes different current limits: "several million, but fewer than 5 million" and "no more than 1 million in 24 hours".
+- The brief quotes different current limits: "several million, but fewer than 5 million" and "no more than 1 million in 24 hours".
 - It is not defined whether these numbers are messages, unique MIME objects or recipients.
 - The duration of the sending window is unknown. Five million per day and five million in two hours are different problems.
 - It is unknown where the limit was measured: Postal ingress, queue growth, connection attempts, or confirmed responses from remote MX hosts.
 - The current topology, the MariaDB settings, the number of workers, the sending IPs and the actual monthly spend are unknown.
-- The diff of the client's fork against upstream Postal is unknown.
+- The diff of the production fork against upstream Postal is unknown.
 - A previous implementation in Go reached 5 million but was rejected because of other problems. Its code or a postmortem is needed before a new implementation.
 - The feature mix, the retention and the volume of stored history are not defined.
 
@@ -164,13 +166,13 @@ Meanwhile the hot queries also use:
 - `retry_after`;
 - `batch_key`.
 
-This is a hypothesis about an inefficient query plan, not permission to immediately add an arbitrary index. Real `EXPLAIN/ANALYZE`, a slow query log, lock waits and tests at a production-like queue size are required first. The indexes may already have been changed in the client's fork.
+This is a hypothesis about an inefficient query plan, not permission to immediately add an arbitrary index. Real `EXPLAIN/ANALYZE`, a slow query log, lock waits and tests at a production-like queue size are required first. The indexes may already have been changed in the production fork.
 
 ### 4. Hot statistics writes
 
 When a message is created, message statistics and global totals are updated. Under high concurrency such counters can create row-lock contention and additional write amplification.
 
-A candidate change: write immutable delivery events and compute the aggregates asynchronously and idempotently. Statistics cannot simply be deleted if the client's UI or reports depend on them.
+A candidate change: write immutable delivery events and compute the aggregates asynchronously and idempotently. Statistics cannot simply be deleted if the product's UI or reports depend on them.
 
 ### 5. The sending IP is bound to the worker host
 
@@ -199,7 +201,7 @@ Increasing worker threads must be matched against:
 
 Do not launch thousands of worker threads simply because the server has many CPUs.
 
-## Study the client's fork first
+## Study the production fork first
 
 Before the first optimisation, capture the following artifacts:
 
@@ -213,7 +215,7 @@ Before the first optimisation, capture the following artifacts:
 8. The existing metrics, dashboards and incidents.
 9. The code and postmortem of the previous Go prototype.
 
-Pay particular attention to changes that may have broken batching, connection reuse or the locality of the sending IP. Upstream Postal must not be treated as an accurate reflection of the client's production fork.
+Pay particular attention to changes that may have broken batching, connection reuse or the locality of the sending IP. Upstream Postal must not be treated as an accurate reflection of a production fork.
 
 ## Terms and units of measurement
 
@@ -309,7 +311,7 @@ and any inaccuracy there would look like a measurement result.
 
 The queue length and the domain cardinality are the main multipliers of the cost of draining,
 because neither of the two hot worker queries is covered by an index
-(the mechanics are analysed in [docs/postal-internals.md](docs/postal-internals.md)).
+(the mechanics are analysed in [docs/postal-internals.md](postal-internals.md)).
 Hence a series of lengths is measured rather than a single point, and the queue composition
 is measured separately: the share of rows with `retry_after` in the future reproduces the
 degeneration at which the claim query stops being cheap.
@@ -358,7 +360,7 @@ rather than a larger number of them.
 
 ## The correct test environment
 
-The infrastructure is described separately in `postal-benchmark-ansible-task.md`. The main rules:
+The infrastructure is described separately in [bench-requirements.md](bench-requirements.md). The main rules:
 
 - place the load generator separately from the SUT for final measurements;
 - use a real Postfix with a queue and a `discard` transport for the happy path;
@@ -470,7 +472,7 @@ The primary benchmark profile must be pinned and must not change between commits
 
 ### Stage 0. A reproducible baseline
 
-- Deploy upstream and the client's fork on an identical bench.
+- Deploy upstream and the production fork on an identical bench.
 - Reproduce the reported limit.
 - Separate ingress throughput from queue drain throughput.
 - Find the first saturated resource.
@@ -904,10 +906,15 @@ The links below point at `main` for ease of navigation. The benchmark report mus
 
 ## The project work plan
 
-1. Deploy a reproducible test environment.
-2. Automate its deployment through the Ansible inventory.
-3. Measure upstream Postal and the client's fork.
-4. Create a fork and CI/CD for automatically benchmarking every candidate.
-5. Perform small, confirmed optimisations of the existing code.
-6. Implement a compatible worker with PoC optimisations for the first proven bottleneck.
-7. Gradually replace the queue/storage/ingress, only where measurements and a safe migration path exist.
+| # | Step | Status |
+|---|---|---|
+| 1 | Deploy a reproducible test environment | done — [running.md](running.md) |
+| 2 | Automate its deployment through the Ansible inventory | done — `inventories/single-host`, `inventories/distributed` |
+| 3 | Measure upstream Postal | done — [RESULTS.md](../RESULTS.md); measuring a production fork needs access to it |
+| 4 | A fork and CI/CD that builds, tests and publishes every candidate | done — [custom-builds.md](custom-builds.md) |
+| 5 | Small, confirmed optimisations of the existing code | first change done — [optimisations.md](optimisations.md); its gain needs production-size hardware |
+| 6 | A compatible worker with PoC optimisations for the first proven bottleneck | next phase — [roadmap.md](../roadmap.md) |
+| 7 | Replace the queue/storage/ingress only where measurements and a safe migration path exist | next phase |
+
+Steps 1–5 are the scope of this repository. Steps 6–7 depend on data only a production
+installation can provide; the questions above are the checklist for collecting it.

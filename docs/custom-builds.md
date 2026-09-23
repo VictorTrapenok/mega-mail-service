@@ -170,8 +170,8 @@ verify a pulled image exactly as they verify a locally built one.
 
 ```bash
 docker pull ghcr.io/victortrapenok/mega-mail-service/postal:src-250f8d03cec2
-docker inspect --format '{{index .Config.Labels "bench.source.tree"}}' \
-  ghcr.io/victortrapenok/mega-mail-service/postal:src-250f8d03cec2
+docker inspect ghcr.io/victortrapenok/mega-mail-service/postal:src-250f8d03cec2 \
+  | jq -r '.[0].Config.Labels["bench.source.tree"]'
 ```
 
 The point of quoting the `src-` tag rather than `latest` is that it is the same string the

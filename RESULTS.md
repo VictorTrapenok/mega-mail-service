@@ -1,10 +1,12 @@
-# What the bench measured
+# Postal benchmark results: throughput, IP pools and receiver limits
 
 A summary of the findings this bench has produced so far, and — just as importantly — of what
 it has not established yet. The methodology is in [ARCHITECTURE.md](ARCHITECTURE.md), the
 Postal internals the conclusions rest on are in
 [docs/postal-internals.md](docs/postal-internals.md), and the full narrative with every wrong
-turn is in [CHANGELOG.md](CHANGELOG.md).
+turn is in [docs/engineering-log.md](docs/engineering-log.md). Practical advice drawn from these
+results is in the [tuning checklist](docs/postal-tuning-checklist.md) and the
+[FAQ](docs/postal-performance-faq.md).
 
 Reference runs are in [reports/reference/](reports/reference/). Every run in this project
 carries its own "what this run does not prove" section; the claims below inherit those limits.
@@ -19,7 +21,7 @@ What does bind, and what the bench was extended to measure, is the receiving sid
 per-IP limits the same Postal, on the same hardware, working *harder*, delivered a quarter as
 much. Throughput then scales with the number of sending addresses, not with cores.
 
-## The two reference runs
+## Postal throughput with and without per-IP receiver limits
 
 Identical in everything but the receiver's policy: 6 outbound addresses, 75 ms artificial
 response delay on the sink, 2 worker replicas × 2 threads, 1000 destination domains,
@@ -35,6 +37,11 @@ response delay on the sink, 2 worker replicas × 2 threads, 1000 destination dom
 | Refusals recorded by the receiver | 0 | 16 900 |
 | Reconciliation discrepancy | 0 % | 0 % |
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/postal-throughput-receiver-limits-dark.svg">
+  <img alt="Postal delivery attempts and delivered recipients per second, with an accepting receiver and with per-IP limits" src="docs/images/postal-throughput-receiver-limits-light.svg" width="800">
+</picture>
+
 The attempt rate *rose* under the cap, because a temporary refusal arrives at `MAIL FROM` and
 the message body is never transferred, so the worker cycles faster. Five of every six dequeue
 cycles bought nothing. None of this is visible in a delivery-rate figure, which counts only
@@ -46,7 +53,7 @@ bind at this delivery concurrency, and the two are indistinguishable in the SMTP
 answer `421 ... too many connections` — so the bench classifies them from the receiver's log
 instead.
 
-## What production features cost, measured
+## What tracking, webhooks and `send_limit` cost
 
 The two runs above were made with `send_limit` cleared and with tracking and webhooks off.
 The bench now runs all three the way production does, and the same two arms were measured
@@ -99,7 +106,7 @@ report refuses to print it at all unless the addresses actually reached their qu
 run, because otherwise it would describe the sender's speed while reading as the receiver's
 limit.
 
-## A large IP pool is what our changes are aimed at
+## Large IP pools defeat Postal batching
 
 This is the finding with the most operational consequence, and it is what our work on the
 code targets: an installation sending from a large pool of addresses is the case Postal
@@ -140,7 +147,7 @@ pool, the more there is to recover in the code. The first change is described in
 [docs/optimisations.md](docs/optimisations.md); measuring it needs a bench arm with many
 addresses, which the hardware available so far cannot provide.
 
-## What limits a receiver can impose, and which one binds
+## Which receiver limit binds: concurrency or volume
 
 The four Postfix per-client limits are not independent, and choosing them carelessly measures
 the wrong one. Postal reuses an SMTP session for only 1.4–3.35 messages, so a connection-rate
@@ -174,7 +181,7 @@ Three properties come straight from the source and none of them is configurable:
 Together these are the argument for pacing output to the receiver's rate rather than raising
 delivery concurrency, and for sharding an installation rather than distributing one.
 
-## Delivery is at-least-once, and the bench can see it
+## Delivery is at-least-once
 
 On the throttled run the receiver accepted 4310 messages but only 4301 distinct recipients.
 Nine recipients were delivered twice. That is not a deployment fault here — the worker
@@ -210,7 +217,11 @@ Stated plainly, because the numbers above are worth only as much as their limits
 - **The MariaDB binlog is off**, so disk writes are roughly half those of any installation
   with replication. Not limiting at present, but it understates the I/O profile.
 
-## Open questions
+## What a production installation would answer
+
+The questions below cannot be answered on a bench. They are the first things to establish on
+a real installation, and the full discovery list is in the
+[optimisation guide](docs/postal-optimization-guide.md#questions-that-still-have-to-be-answered).
 
 1. Where exactly was the current production limit measured — ingress, queue growth, connection
    attempts, or confirmed responses from remote MX hosts? Those are different quantities.

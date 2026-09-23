@@ -29,3 +29,6 @@ dumps/
 __pycache__/
 *.pyc
 .venv/
+
+# ansible-lint working directory
+.ansible/

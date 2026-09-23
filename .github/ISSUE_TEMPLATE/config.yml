@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Consulting, contract work or a job offer
+    url: https://www.linkedin.com/in/victor-trapenok/
+    about: Need help with a slow or overloaded Postal installation? Contact Victor Trapenok on LinkedIn.
+  - name: Postal performance FAQ
+    url: https://github.com/VictorTrapenok/mega-mail-service/blob/master/docs/postal-performance-faq.md
+    about: Common Postal performance questions, each answered with measurements.
+  - name: Postal tuning checklist
+    url: https://github.com/VictorTrapenok/mega-mail-service/blob/master/docs/postal-tuning-checklist.md
+    about: What to check in your own installation before anything else.

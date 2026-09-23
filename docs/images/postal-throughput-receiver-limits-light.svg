@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="318" viewBox="0 0 800 318" role="img" aria-labelledby="t d">
+<title id="t">Postal mail server throughput: delivery attempts vs delivered recipients per second</title>
+<desc id="d">Stock Postal 3.3.7 on 2 vCPU, 6 outbound IPs. With a receiver that accepts everything: 46.3 attempts/s, 46.3 delivered recipients/s. With a receiver that caps 120 messages per minute per IP: 68.5 attempts/s, 13.3 delivered recipients/s.</desc>
+<rect width="800" height="318" fill="#fcfcfb"/>
+<text x="24" y="38" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="19" font-weight="600" fill="#0b0b0b">Same Postal, same 2 vCPU: the receiver decides the rate</text>
+<text x="24" y="62" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13.5" fill="#52514e">Stock Postal 3.3.7, queue drain, 6 outbound IPs. Per second.</text>
+<rect x="24" y="82" width="12" height="12" rx="2" fill="#2a78d6"/>
+<text x="42" y="92" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#52514e">Delivery attempts</text>
+<rect x="191.8" y="82" width="12" height="12" rx="2" fill="#eb6834"/>
+<text x="209.8" y="92" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#52514e">Delivered recipients</text>
+<line x1="250.0" y1="112" x2="250.0" y2="250" stroke="#e4e3df" stroke-width="1"/>
+<text x="250.0" y="268" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8a8983" text-anchor="middle">0</text>
+<line x1="372.5" y1="112" x2="372.5" y2="250" stroke="#e4e3df" stroke-width="1"/>
+<text x="372.5" y="268" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8a8983" text-anchor="middle">20</text>
+<line x1="495.0" y1="112" x2="495.0" y2="250" stroke="#e4e3df" stroke-width="1"/>
+<text x="495.0" y="268" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8a8983" text-anchor="middle">40</text>
+<line x1="617.5" y1="112" x2="617.5" y2="250" stroke="#e4e3df" stroke-width="1"/>
+<text x="617.5" y="268" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8a8983" text-anchor="middle">60</text>
+<line x1="740.0" y1="112" x2="740.0" y2="250" stroke="#e4e3df" stroke-width="1"/>
+<text x="740.0" y="268" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8a8983" text-anchor="middle">80</text>
+<text x="236" y="145" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13.5" fill="#0b0b0b" text-anchor="end">Receiver accepts everything</text>
+<path d="M250,118 h279.5875 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-279.5875 z" fill="#2a78d6"/>
+<text x="541.6" y="134" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#0b0b0b">46.3</text>
+<path d="M250,142 h279.5875 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-279.5875 z" fill="#eb6834"/>
+<text x="541.6" y="158" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#0b0b0b">46.3</text>
+<text x="236" y="225" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13.5" fill="#0b0b0b" text-anchor="end">Receiver caps 120 msg/min per IP</text>
+<path d="M250,198 h415.5625 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-415.5625 z" fill="#2a78d6"/>
+<text x="677.6" y="214" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#0b0b0b">68.5</text>
+<path d="M250,222 h77.46249999999998 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-77.46249999999998 z" fill="#eb6834"/>
+<text x="339.5" y="238" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" fill="#0b0b0b">13.3</text>
+<text x="24" y="300" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8a8983">Under per-IP limits Postal works harder (5.17 attempts per delivered recipient) and delivers 3.5× less. Source: reports/reference/.</text>
+</svg>

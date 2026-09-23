@@ -52,7 +52,7 @@ The rate is still the rate it sustained; the queue simply outlasted the timeout.
 
 The rest of the runs this project produced are deliberately not committed. Most are
 iterations whose numbers were later found to be wrong — the reasoning that discarded them is
-in [CHANGELOG.md](../../CHANGELOG.md), which is the honest record. A repository holding thirty
+in [docs/engineering-log.md](../../docs/engineering-log.md), which is the honest record. A repository holding thirty
 mutually contradictory runs would tell a reader less than two that are explained.
 
 ## How to reproduce
