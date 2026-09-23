@@ -1,9 +1,28 @@
-# Roadmap
+# Roadmap: next steps for Postal performance work
 
-## Not completed in the current iteration
+## Phase 1: done
 
-Deliberately deferred in order to obtain the baseline sooner. The order roughly
-corresponds to priority.
+- A reproducible Postal load-testing bench, deployed from one Ansible inventory
+  ([ARCHITECTURE.md](ARCHITECTURE.md)).
+- Reference measurements of stock Postal with an accepting receiver, under per-IP limits, and
+  with production features on ([RESULTS.md](RESULTS.md)).
+- Postal internals confirmed against the source ([docs/postal-internals.md](docs/postal-internals.md)).
+- Our own Postal build with CI, the test suite and published images, plus the first
+  optimisation ([docs/optimisations.md](docs/optimisations.md)).
+
+## Phase 2: next
+
+Most of what follows needs production-size hardware or data from a production installation.
+The order roughly corresponds to priority.
+
+### Publishing and upstream
+
+- **Offer the batch-collection change upstream** as a pull request to
+  [postalserver/postal](https://github.com/postalserver/postal), with the `EXPLAIN` evidence
+  from a production-sized queue.
+- **A write-up of the results** as an article, linking back to the reference runs.
+- **A second chart** for the IP pool finding (one address against six), next to the
+  receiver-limits chart in the README.
 
 ### Measurements
 
@@ -55,7 +74,7 @@ corresponds to priority.
   key, the registry credentials and production DKIM keys must never be. gitleaks with an
   allowlist for that one file is the obvious shape.
 
-### Credibility
+### Making the model realistic
 
 - **The limit values are an assumption.** `bench_sink_profiles.provider` holds typical
   numbers for a large MX because neither the destination-domain mix nor the throttling
@@ -163,7 +182,7 @@ the baseline or requires hardware that is not available yet.
   domain is lower than with a true Zipf, so Postal's batching is exercised
   less than in reality. It is called by its name in the report.
 
-## Questions that still have to be answered
+## Questions for a production installation
 
 1. Where exactly was the current limit measured: Postal ingress, queue growth, connection
    attempts, or confirmed responses from remote MX hosts? That determines whether

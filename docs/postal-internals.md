@@ -191,7 +191,8 @@ Everything else — `SMTPServerBusy`, `SMTPAuthenticationError`, `SMTPSyntaxErro
 
 Taking `Net::SMTP::Response#exception_class` into account (`/\A4/` → ServerBusy,
 `/\A50/` → SyntaxError, `/\A53/` → AuthenticationError, `/\A5/` → FatalError),
-this means: **`553` and `500–504` are SoftFail in Postal, not a final rejection.**
+this means: **`500–504` and `530–535` are SoftFail in Postal, not a final rejection**,
+while `550–554` are `HardFail` as expected.
 The fault injection matrix must proceed from this rather than from RFC 5321 semantics,
 otherwise the reconciliation will carry an unexplained constant bias.
 

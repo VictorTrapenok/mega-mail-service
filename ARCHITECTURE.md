@@ -1,21 +1,29 @@
-# Architecture
+# Architecture of the Postal load-testing bench
 
-The table of contents for the project documentation. Details live in separate files; here
+How the bench that measures [Postal](https://github.com/postalserver/postal) mail server
+performance is put together, the principles behind it, and the glossary. This file is also
+the table of contents for the project documentation: details live in separate files, and here
 there are only links and general principles.
 
 ## Documents
 
 | Document | What it covers |
 |---|---|
-| [postal-benchmark-ansible-task.md](postal-benchmark-ansible-task.md) | Bench requirements and acceptance criteria |
-| [POSTAL_OPTIMIZATION_GUIDE.md](POSTAL_OPTIMIZATION_GUIDE.md) | Measurement methodology and the optimisation sequence |
+| [README.md](README.md) | What this is, the key results, and how to get in touch |
+| [RESULTS.md](RESULTS.md) | Postal benchmark results, with what each one does and does not establish |
+| [docs/postal-performance-faq.md](docs/postal-performance-faq.md) | Postal performance questions and answers, each linked to its evidence |
+| [docs/postal-tuning-checklist.md](docs/postal-tuning-checklist.md) | What to check in a production Postal installation, in order |
 | [docs/postal-internals.md](docs/postal-internals.md) | Confirmed Postal internals with paths into the source |
-| [docs/custom-builds.md](docs/custom-builds.md) | Our Postal source in `vendor/postal/`, how it is built and how a run proves which build it measured |
 | [docs/optimisations.md](docs/optimisations.md) | Our changes to Postal: what each one does, why it is safe, and whether it has been measured |
+| [docs/custom-builds.md](docs/custom-builds.md) | Our Postal source in `vendor/postal/`, how it is built and how a run proves which build it measured |
+| [docs/postal-optimization-guide.md](docs/postal-optimization-guide.md) | Measurement methodology and the optimisation sequence |
+| [docs/bench-requirements.md](docs/bench-requirements.md) | Bench requirements and acceptance criteria |
 | [docs/running.md](docs/running.md) | Deploying the bench and taking a measurement |
-| [README.md](README.md) | What this is, what was measured, and what needs bigger hardware |
-| [RESULTS.md](RESULTS.md) | The findings, with what each one does and does not establish |
-| [roadmap.md](roadmap.md) | What has been deferred and why |
+| [TESTING.md](TESTING.md) | Every check that keeps the numbers honest, and where it lives |
+| [reports/reference/](reports/reference/README.md) | The reference runs behind the published numbers |
+| [docs/engineering-log.md](docs/engineering-log.md) | The detailed history, including every wrong turn |
+| [CHANGELOG.md](CHANGELOG.md) | A brief list of what was done and when |
+| [roadmap.md](roadmap.md) | What comes next and why |
 
 ## What the bench consists of
 
@@ -145,4 +153,7 @@ Postal.
 | **goodput** | Distinct recipients delivered per second. Differs from the delivery rate as soon as anything is retried, and it is the only one of the two that can be extrapolated |
 | **retry amplification** | Delivery attempts divided by recipients delivered. The share of the worker's work spent on messages that were refused |
 | **time to delivery** | From acceptance by Postal to the delivery record. Under throttling it is set by the retry ladder rather than by Postal's speed, and it is what the recipient experiences. Not the same as ingress latency |
+| **batch collection** | After claiming a message, the worker gathers up to 100 more for the same destination and outbound IP to send in one SMTP session. Our first optimisation makes that query index-seekable |
+| **retry ladder** | Postal's schedule for retrying a deferred message: `1.3 ^ attempts × 5 minutes`, with a hardcoded five-minute base |
+| **serialisation point** | A single database row that every message updates, such as the global `statistics` row. It does not get faster with more nodes |
 | **per-IP rate** | Recipients per second one outbound address sustains against a throttling receiver. Capacity is bought in addresses, not in cores |

@@ -31,3 +31,8 @@ The CLAUDE.md and ARCHITECTURE.md files must contain the general baseline princi
 # CHANGELOG.md
 
 In CHANGELOG.md write a very brief list of completed tasks. It can be used for historical reference about what was done and when.
+The detailed narrative (what went wrong, how it was caught) goes to [docs/engineering-log.md](docs/engineering-log.md).
+
+# Public presentation
+
+The repository doubles as a public portfolio. Keep README.md results-first, keep the Postal performance FAQ and tuning checklist in `docs/` in sync with RESULTS.md, and write headings the way people search for them (for example "Why is the Postal queue growing").

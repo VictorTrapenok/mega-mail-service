@@ -1,6 +1,6 @@
 # Task: an Ansible bench for load testing Postal
 
-> Revision 2. Part of the requirements of the first edition was technically unachievable — the corrections were made based on reading the Postal 3.3.7 sources, not the documentation. The rationale is collected in [docs/postal-internals.md](docs/postal-internals.md).
+> Revision 2. Part of the requirements of the first edition was technically unachievable — the corrections were made based on reading the Postal 3.3.7 sources, not the documentation. The rationale is collected in [docs/postal-internals.md](postal-internals.md).
 
 ## Context and goal
 
@@ -148,7 +148,7 @@ Postal's stock counters are not enough for this: version 3.x has exactly 11 Prom
 accepted = sent + hard_failed + held + queued + in_flight
 ```
 
-The formulation of the first edition (`accepted = delivered_to_sink + failed + queued`) can never add up: it lacks the `Held` bucket (suppression list, send_limit, dev mode, suspended server) and lacks `in_flight` (rows with a non-empty `locked_at`). Besides, in Postal **`553` and `500–504` are classified as SoftFail rather than permanent** (`Net::SMTP::Response#exception_class`), so "failed" without qualification is ambiguous.
+The formulation of the first edition (`accepted = delivered_to_sink + failed + queued`) can never add up: it lacks the `Held` bucket (suppression list, send_limit, dev mode, suspended server) and lacks `in_flight` (rows with a non-empty `locked_at`). Besides, in Postal **`500–504` and `530–535` are classified as SoftFail rather than permanent** (`Net::SMTP::Response#exception_class`), so "failed" without qualification is ambiguous.
 
 `delivered` is counted independently — from the sink logs — and compared with `sent` from the Postal DB. A discrepancy means either lost messages or lost log lines, and must be explained in the report.
 

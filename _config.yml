@@ -1,0 +1,43 @@
+---
+# GitHub Pages site for the project documentation (Settings -> Pages -> Deploy from a branch,
+# master, / (root)). Jekyll renders the same Markdown files that GitHub shows, so there is one
+# source of truth. The plugins below are all on the GitHub Pages allowlist.
+title: Postal mail server performance
+description: >-
+  Benchmark, bottlenecks and optimisation of the Postal mail server: throughput, delivery
+  queue, IP pools, receiver limits, worker tuning and a reproducible Ansible load-testing bench.
+author: Victor Trapenok
+url: https://victortrapenok.github.io
+baseurl: /mega-mail-service
+lang: en
+theme: jekyll-theme-cayman
+
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+  - jekyll-relative-links
+  - jekyll-optional-front-matter
+  - jekyll-readme-index
+  - jekyll-titles-from-headings
+
+relative_links:
+  enabled: true
+  collections: false
+
+titles_from_headings:
+  enabled: true
+  strip_title: true
+
+# Only the documentation is published. The Ansible code, the vendored Postal source and the
+# agent instructions are not pages.
+exclude:
+  - vendor/
+  - roles/
+  - playbooks/
+  - inventories/
+  - group_vars/
+  - collections/
+  - requirements.yml
+  - ansible.cfg
+  - CLAUDE.md
+  - LICENSE

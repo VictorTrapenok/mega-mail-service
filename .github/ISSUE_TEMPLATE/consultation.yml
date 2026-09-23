@@ -1,0 +1,49 @@
+name: Postal performance consultation
+description: Ask for help with a slow or overloaded Postal installation (paid, hourly).
+title: "[Consultation] "
+labels: ["consultation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for getting in touch. A few facts about your installation help me tell you
+        quickly whether and how I can help. Share only what you are comfortable making public:
+        this issue is visible to everyone. Rough figures are fine, and you can leave a contact
+        address or ask me to reach you privately.
+  - type: textarea
+    id: symptom
+    attributes:
+      label: What is the problem?
+      description: For example, the queue keeps growing, sending stalls at N emails a day, or a lot of SoftFail or 421 replies.
+    validations:
+      required: true
+  - type: input
+    id: volume
+    attributes:
+      label: Volume
+      description: Recipients per day now, the target, and the sending window (24 h, 2 h, ...).
+      placeholder: "now ~1M/day, target 5M/day, within 8 hours"
+  - type: input
+    id: setup
+    attributes:
+      label: Setup
+      description: Postal version or fork base, number of servers and cores, worker replicas and WORKER_THREADS, MariaDB layout.
+  - type: input
+    id: ips
+    attributes:
+      label: Sending IPs
+      description: How many outbound addresses, and whether IP pools are enabled.
+  - type: checkboxes
+    id: features
+    attributes:
+      label: Features in use
+      options:
+        - label: Click/open tracking
+        - label: Webhooks
+        - label: send_limit
+        - label: A modified Postal fork
+  - type: textarea
+    id: contact
+    attributes:
+      label: How should I contact you?
+      description: An email or messenger handle, or leave empty and I will reply here.
